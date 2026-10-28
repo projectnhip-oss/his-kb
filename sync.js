@@ -6,7 +6,8 @@ db.exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)"
 const getS = (k, d = "") => db.prepare("SELECT value FROM settings WHERE key = ?").get(k)?.value ?? d;
 const setS = (k, v) => db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(k, String(v ?? ""));
 
-const DEFAULT_URL = "https://linemoph.bgs.co.th/api/v1/reports/case-summary";
+// the address is set in the page by an admin, so the code holds no internal system address
+const DEFAULT_URL = "";
 const INTERVALS = [0, 30, 60, 180, 360, 1440]; // minutes; 0 = off
 
 /** Expiry of a JWT (the part after the first dot holds "exp"), or null if it is not one. */
@@ -35,8 +36,8 @@ function settings() {
 }
 function saveSettings({ url, token, interval }) {
   if (url !== undefined) {
-    const u = String(url).trim() || DEFAULT_URL;
-    if (!/^https?:\/\/[^\s]+$/i.test(u)) throw new Error("URL ไม่ถูกต้อง");
+    const u = String(url).trim();
+    if (u && !/^https?:\/\/[^\s]+$/i.test(u)) throw new Error("URL ไม่ถูกต้อง");
     setS("sync.url", u);
   }
   if (token !== undefined && String(token).trim()) {
@@ -60,6 +61,7 @@ async function syncNow() {
   if (running) throw new Error("กำลังดึงข้อมูลอยู่ รอสักครู่");
   const token = getS("sync.token");
   if (!token) throw new Error("ยังไม่ได้ใส่ token");
+  if (!getS("sync.url")) throw new Error("ยังไม่ได้ใส่ URL ของ API");
   running = true;
   setS("sync.lastRun", new Date().toISOString());
   try {
@@ -108,7 +110,7 @@ async function syncNow() {
 function startScheduler(log = console.log) {
   setInterval(async () => {
     const every = Number(getS("sync.interval", "60"));
-    if (!every || running || !getS("sync.token") || getS("sync.lastStatus") === "token_expired") return;
+    if (!every || running || !getS("sync.token") || !getS("sync.url") || getS("sync.lastStatus") === "token_expired") return;
     const last = Date.parse(getS("sync.lastRun") || 0) || 0;
     if (Date.now() - last < every * 60e3) return;
     try {

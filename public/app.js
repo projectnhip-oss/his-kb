@@ -426,7 +426,7 @@ function draftFromCluster(f) {
   return {
     title: f.title.split("\n")[0].slice(0, 200), aliases: [f.title, ...f.variants].map((x) => x.split("\n")[0].slice(0, 200)),
     errorMsg: "", system: "EHP", level: "support", userVisible: false,
-    causes: sols.map((s) => ({ cause: "", steps: s.text ? splitSteps(s.text) : [] })), verify: "", images: [],
+    causes: sols.map((s, i) => ({ cause: s.text ? `วิธีที่ ${i + 1}${s.n > 1 ? ` (ใช้แก้ ${s.n} เคส)` : ""}` : "", steps: s.text ? splitSteps(s.text) : [] })), verify: "", images: [],
   };
 }
 
@@ -484,10 +484,10 @@ async function openSync() {
       </div>
       <div class="field"><label for="sy-token">Token ${st.hasToken ? "(วางใหม่เพื่อเปลี่ยน)" : ""}</label>
         <textarea id="sy-token" class="mono" rows="3" placeholder="วางค่าหลังคำว่า Bearer จาก DevTools > Network > case-summary > Headers > Authorization" autocomplete="off" spellcheck="false"></textarea>
-        <span class="hint">token เก็บไว้บนเครื่อง Server และไม่แสดงกลับในหน้าเว็บ ใช้ได้จนหมดอายุ ถ้าได้ API Key จากทีม BGS ให้วางที่นี่แทน</span></div>
+        <span class="hint">token เก็บไว้บนเครื่อง Server และไม่แสดงกลับในหน้าเว็บ ใช้ได้จนหมดอายุ ถ้าได้ API Key ถาวรจากผู้ดูแลระบบรับแจ้งปัญหา ให้วางที่นี่แทน</span></div>
       <div class="row2">
         <div class="field"><label for="sy-every">ดึงข้อมูลอัตโนมัติ</label><select id="sy-every">${SYNC_EVERY.map(([v, l]) => `<option value="${v}" ${v === st.interval ? "selected" : ""}>${l}</option>`).join("")}</select></div>
-        <div class="field"><label for="sy-url">URL ของ API</label><input id="sy-url" value="${esc(st.url)}" spellcheck="false"></div>
+        <div class="field"><label for="sy-url">URL ของ API</label><input id="sy-url" value="${esc(st.url)}" placeholder="https://.../api/v1/reports/case-summary" spellcheck="false"></div>
       </div>
       <div class="form-err" id="formErr">${esc(err)}</div>
       ${msg ? `<div class="verify">${msg}</div>` : ""}
