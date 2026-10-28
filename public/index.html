@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>คลังวิธีแก้ปัญหา HIS</title>
+<script>
+  // set the saved theme before the page paints, so it never flashes the wrong colours
+  try { var t = localStorage.getItem("kb-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anuphan:wght@500;600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="top-in gutter">
+    <div class="brand">
+      <h1>คลังวิธีแก้ปัญหา HIS <small id="subtitle">ค้นวิธีแก้ปัญหาที่พบบ่อย</small></h1>
+      <div class="brand-actions">
+        <button class="btn theme-btn" id="themeBtn" type="button"></button>
+        <label class="toggle" id="userViewWrap" hidden title="แสดงเฉพาะเรื่องที่เปิดให้ User เห็น"><input type="checkbox" id="userView"> มุมมอง User</label>
+        <button class="btn primary" id="addBtn" hidden>+ บันทึกปัญหาใหม่</button>
+        <button class="btn" id="loginBtn">เข้าสู่ระบบทีม</button>
+        <div class="menu" id="acctMenu" hidden>
+          <button class="btn" id="acctBtn" aria-haspopup="true" aria-expanded="false">บัญชี ▾</button>
+          <div class="menu-list" id="acctList" hidden>
+            <div class="who" id="whoami"></div>
+            <button id="mPassword">เปลี่ยนรหัสผ่าน</button>
+            <button id="mUsers" data-admin>จัดการผู้ใช้</button>
+            <button id="mExport">ดาวน์โหลดข้อมูลสำรอง (JSON)</button>
+            <button id="mSync" data-admin>เชื่อมต่อระบบรับแจ้งปัญหา (API)</button>
+            <button id="mImportCases" data-admin>นำเข้าเคสจาก Excel</button>
+            <button id="mImportHosp" data-admin>นำเข้ารายชื่อสถานพยาบาล</button>
+            <button id="mImport" data-admin>นำเข้าบทความ (JSON)</button>
+            <button id="mLogout">ออกจากระบบ</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="search">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="q" type="search" placeholder="พิมพ์อาการ, คำที่ User แจ้ง หรือข้อความ Error" autocomplete="off" aria-label="ค้นหา">
+    </div>
+    <div class="tabs" id="tabs" role="tablist" hidden>
+      <button role="tab" id="tab-articles" data-tab="articles" aria-selected="true">บทความวิธีแก้ <span class="tab-n" id="n-articles"></span></button>
+      <button role="tab" id="tab-cases" data-tab="cases" aria-selected="false">เคสที่เคยแก้ <span class="tab-n" id="n-cases"></span></button>
+      <button role="tab" id="tab-frequent" data-tab="frequent" aria-selected="false">ปัญหาที่พบบ่อย</button>
+    </div>
+    <div class="filters" id="filters"></div>
+  </div>
+</header>
+
+<main class="work gutter" id="work">
+  <section class="list-wrap">
+    <div class="meta-line"><span id="count">กำลังโหลด…</span><span>เรียงตามที่ช่วยได้มากสุด</span></div>
+    <div class="list" id="list"></div>
+  </section>
+  <section class="detail" id="detail"></section>
+</main>
+<main class="cases gutter" id="caseView" hidden></main>
+
+<div class="sheet" id="sheet" hidden></div>
+<div class="toast" id="toast" hidden></div>
+<script src="norm.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

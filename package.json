@@ -1,0 +1,17 @@
+{
+  "name": "his-kb",
+  "version": "1.0.0",
+  "description": "คลังวิธีแก้ปัญหา HIS สำหรับทีม Support",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "create-user": "node --disable-warning=ExperimentalWarning scripts/create-user.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2"
+  }
+}
