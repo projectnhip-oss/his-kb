@@ -157,7 +157,7 @@ function renderDetail() {
     <div class="sec"><div class="sec-label">สาเหตุและวิธีแก้ (${a.causes.length})</div>
       ${a.causes.map((c, i) => `<details class="cause" ${i === 0 ? "open" : ""}><summary><span class="n">${String(i + 1).padStart(2, "0")}</span><span>${esc(c.cause)}</span></summary><ol class="steps">${c.steps.map((s) => `<li>${esc(s)}</li>`).join("")}</ol></details>`).join("")}
     </div>
-    ${a.images?.length ? `<div class="sec"><div class="sec-label">รูปประกอบ</div><div class="gallery">${a.images.map((im) => `<figure><a href="${esc(im.url)}" target="_blank" rel="noopener"><img src="${esc(im.url)}" alt="${esc(im.caption || a.title)}" loading="lazy"></a>${im.caption ? `<figcaption>${esc(im.caption)}</figcaption>` : ""}</figure>`).join("")}</div></div>` : ""}
+    ${a.images?.length ? `<div class="sec"><div class="sec-label">รูปประกอบ</div><div class="gallery">${a.images.map((im, i) => `<figure><a href="${esc(im.url)}" target="_blank" rel="noopener" data-zoom="${i}"><img src="${esc(im.url)}" alt="${esc(im.caption || a.title)}" loading="lazy"></a>${im.caption ? `<figcaption>${esc(im.caption)}</figcaption>` : ""}</figure>`).join("")}</div></div>` : ""}
     ${a.verify ? `<div class="sec"><div class="sec-label">ตรวจว่าแก้สำเร็จ</div><div class="verify">${esc(a.verify)}</div></div>` : ""}
     <div class="feedback"><span>วิธีนี้ช่วยได้ไหม</span>
       <button class="btn" id="fbUp" aria-pressed="${mine === 1}">ช่วยได้ · ${up}</button>
@@ -622,6 +622,7 @@ function openSheet(html, center) {
   return sh;
 }
 function closeSheet() {
+  if (S.forcePw) return; // the new-password form cannot be dismissed
   const sh = $("#sheet");
   sh.hidden = true;
   sh.innerHTML = "";
@@ -645,6 +646,7 @@ function openLogin() {
     try {
       S.me = (await api("POST", "/api/login", { username: $("#l-user").value, password: $("#l-pass").value })).user;
       closeSheet();
+      if (S.me.mustChange) return openPassword(S.me, true);
       toast("เข้าสู่ระบบแล้ว");
       await load();
       await loadCaseStats();
@@ -653,24 +655,40 @@ function openLogin() {
   };
 }
 
-function openPassword(user = S.me) {
+function openPassword(user = S.me, forced = false) {
   const self = user.id === S.me.id;
+  S.forcePw = forced;
   const sh = openSheet(`<form class="sheet-panel" id="pwForm" novalidate>
-    <h2>${self ? "เปลี่ยนรหัสผ่าน" : "ตั้งรหัสผ่านใหม่ให้ " + esc(user.displayName)}</h2>
+    <h2>${forced ? "ตั้งรหัสผ่านของคุณ" : self ? "เปลี่ยนรหัสผ่าน" : "ตั้งรหัสผ่านใหม่ให้ " + esc(user.displayName)}</h2>
+    ${forced ? `<div class="notice">บัญชี <b>${esc(user.username)}</b> ยังใช้รหัสผ่านที่ผู้อื่นตั้งให้ ตั้งรหัสผ่านใหม่ที่รู้คนเดียวก่อนใช้งาน</div>` : ""}
+    ${!self ? '<div class="hint">เจ้าของบัญชีจะต้องตั้งรหัสใหม่เองเมื่อ Login ครั้งถัดไป</div>' : ""}
     <div class="field"><label for="p-new">รหัสผ่านใหม่</label><input id="p-new" type="password" autocomplete="new-password"><span class="hint">อย่างน้อย 8 ตัวอักษร</span></div>
     <div class="field"><label for="p-again">พิมพ์อีกครั้ง</label><input id="p-again" type="password" autocomplete="new-password"></div>
     <div class="form-err" id="formErr"></div>
-    <div class="sheet-actions"><button type="button" class="btn" data-close>ยกเลิก</button><button class="btn primary">บันทึก</button></div>
+    <div class="sheet-actions">${forced ? '<button type="button" class="btn" id="pwLogout">ออกจากระบบ</button>' : '<button type="button" class="btn" data-close>ยกเลิก</button>'}<button class="btn primary">บันทึก</button></div>
   </form>`, true);
   $("#p-new").focus();
+  if (forced) $("#pwLogout").onclick = async () => {
+    await api("POST", "/api/logout").catch(() => {});
+    S.forcePw = false; S.me = null;
+    closeSheet();
+    load();
+  };
   sh.onclick = (e) => { if (e.target.matches("[data-close]")) closeSheet(); };
   $("#pwForm").onsubmit = async (e) => {
     e.preventDefault();
     if ($("#p-new").value !== $("#p-again").value) { $("#formErr").textContent = "รหัสผ่านสองช่องไม่ตรงกัน"; return; }
     try {
       await api("PUT", `/api/users/${user.id}/password`, { password: $("#p-new").value });
+      S.forcePw = false;
       closeSheet();
       toast("เปลี่ยนรหัสผ่านแล้ว");
+      if (forced) {
+        S.me.mustChange = 0;
+        await load();
+        await loadCaseStats();
+        searchCases(true);
+      }
     } catch (err) { $("#formErr").textContent = err.message; }
   };
 }
@@ -884,7 +902,43 @@ $("#mLogout").addEventListener("click", async () => {
   load();
 });
 
+/* ---------- image viewer: opens in the page (a data: image cannot open in a new tab) ---------- */
+function openViewer(images, i) {
+  const v = document.createElement("div");
+  v.className = "viewer";
+  v.setAttribute("role", "dialog");
+  v.setAttribute("aria-label", "ดูรูปขนาดใหญ่");
+  const draw = () => {
+    const im = images[i];
+    v.innerHTML = `<img src="${esc(im.url)}" alt="${esc(im.caption || "")}">
+      ${im.caption ? `<div class="viewer-cap">${esc(im.caption)}</div>` : ""}
+      <div class="viewer-bar">${images.length > 1 ? `<button data-v="-1" aria-label="รูปก่อนหน้า">‹</button><span>${i + 1} / ${images.length}</span><button data-v="1" aria-label="รูปถัดไป">›</button>` : ""}<button data-v="x">ปิด (Esc)</button></div>`;
+  };
+  const close = () => { v.remove(); removeEventListener("keydown", key, true); };
+  const step = (d) => { i = (i + d + images.length) % images.length; draw(); };
+  const key = (e) => {
+    if (e.key === "Escape") { e.stopPropagation(); close(); }
+    if (e.key === "ArrowLeft") step(-1);
+    if (e.key === "ArrowRight") step(1);
+  };
+  v.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-v]");
+    if (b) return b.dataset.v === "x" ? close() : step(Number(b.dataset.v));
+    if (e.target === v) close();
+  });
+  addEventListener("keydown", key, true);
+  draw();
+  document.body.append(v);
+  v.querySelector("[data-v='x']").focus();
+}
+
 $("#detail").addEventListener("click", async (e) => {
+  const z = e.target.closest("[data-zoom]");
+  if (z) {
+    const a = S.articles.find((x) => x.id === S.sel);
+    if (a?.images?.length) { e.preventDefault(); openViewer(a.images, Number(z.dataset.zoom)); }
+    return;
+  }
   const a = S.articles.find((x) => x.id === S.sel);
   if (!a) return;
   const id = e.target.id;
@@ -946,6 +1000,7 @@ applyTheme(currentTheme());
 (async () => {
   render();
   await loadMe();
+  if (S.me?.mustChange) { render(); return openPassword(S.me, true); }
   await load();
   if (isTeam()) { await loadCaseStats(); searchCases(true); }
   const id = decodeURIComponent(location.hash.slice(1));

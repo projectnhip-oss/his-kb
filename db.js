@@ -213,24 +213,28 @@ const articles = {
 };
 
 /* ---------- users & sessions ---------- */
+// must_change = 1: the password was set by someone else (first-run admin/admin, or an admin reset), so the owner must pick a new one
+try { db.exec("ALTER TABLE users ADD COLUMN must_change INTEGER NOT NULL DEFAULT 0"); } catch { /* already there */ }
 const SESSION_DAYS = 14;
 const users = {
   count: () => db.prepare("SELECT COUNT(*) n FROM users").get().n,
   list: () => db.prepare("SELECT id, username, display_name AS displayName, role, created_at AS createdAt FROM users ORDER BY id").all(),
   byUsername: (u) => db.prepare("SELECT * FROM users WHERE username = ?").get(u),
-  create(username, displayName, password, role) {
+  create(username, displayName, password, role, mustChange = 0) {
     const info = db
-      .prepare("INSERT INTO users (username, display_name, pass_hash, role, created_at) VALUES (?,?,?,?,?)")
-      .run(username, displayName, hashPassword(password), role, new Date().toISOString());
+      .prepare("INSERT INTO users (username, display_name, pass_hash, role, created_at, must_change) VALUES (?,?,?,?,?,?)")
+      .run(username, displayName, hashPassword(password), role, new Date().toISOString(), mustChange ? 1 : 0);
     return Number(info.lastInsertRowid);
   },
-  setPassword(id, password) {
-    db.prepare("UPDATE users SET pass_hash = ? WHERE id = ?").run(hashPassword(password), id);
+  setPassword(id, password, mustChange = 0) {
+    db.prepare("UPDATE users SET pass_hash = ?, must_change = ? WHERE id = ?").run(hashPassword(password), mustChange ? 1 : 0, id);
     db.prepare("DELETE FROM sessions WHERE user_id = ?").run(id);
   },
   remove: (id) => db.prepare("DELETE FROM users WHERE id = ?").run(id).changes > 0,
   adminCount: () => db.prepare("SELECT COUNT(*) n FROM users WHERE role='admin'").get().n,
-  get: (id) => db.prepare("SELECT id, username, display_name AS displayName, role FROM users WHERE id = ?").get(id),
+  get: (id) => db.prepare("SELECT id, username, display_name AS displayName, role, must_change AS mustChange FROM users WHERE id = ?").get(id),
+  all: () => db.prepare("SELECT * FROM users").all(),
+  flagMustChange: (id) => db.prepare("UPDATE users SET must_change = 1 WHERE id = ?").run(id),
 };
 const sessions = {
   create(userId) {
@@ -243,7 +247,7 @@ const sessions = {
     if (!token) return null;
     return (
       db
-        .prepare(`SELECT u.id, u.username, u.display_name AS displayName, u.role FROM sessions s
+        .prepare(`SELECT u.id, u.username, u.display_name AS displayName, u.role, u.must_change AS mustChange FROM sessions s
                   JOIN users u ON u.id = s.user_id WHERE s.token = ? AND s.expires_at > ?`)
         .get(token, new Date().toISOString()) || null
     );

@@ -15,8 +15,8 @@ const IMG_TYPES = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp
 // บัญชีตั้งต้นที่ใช้ร่วมกันทั้งทีม: admin / admin (เปลี่ยนได้ด้วย DEFAULT_ADMIN_PASSWORD)
 if (users.count() === 0) {
   const pw = process.env.DEFAULT_ADMIN_PASSWORD || "admin";
-  users.create("admin", "ผู้ดูแลระบบ", pw, "admin");
-  console.log(`สร้างบัญชีตั้งต้นแล้ว  ชื่อผู้ใช้: admin  รหัสผ่าน: ${pw}`);
+  users.create("admin", "ผู้ดูแลระบบ", pw, "admin", 1);
+  console.log(`สร้างบัญชีตั้งต้นแล้ว  ชื่อผู้ใช้: admin  รหัสผ่าน: ${pw}  (ต้องตั้งรหัสใหม่เมื่อ Login ครั้งแรก)`);
 }
 if (articles.list(true).length === 0) {
   const seedFile = path.join(__dirname, "seed-data.json");
@@ -74,6 +74,15 @@ app.use((req, res, next) => {
   next();
 });
 
+// anyone still on a well-known password must change it before using anything else
+for (const u of users.all()) if (checkPassword("admin", u.pass_hash)) users.flagMustChange(u.id);
+app.use("/api", (req, res, next) => {
+  if (!req.user?.mustChange) return next();
+  const own = req.method === "PUT" && req.path === `/users/${req.user.id}/password`;
+  if (own || req.path === "/me" || req.path === "/logout") return next();
+  res.status(403).json({ error: "กรุณาเปลี่ยนรหัสผ่านก่อนใช้งาน", mustChange: true });
+});
+
 // write requests must come from our own page (blocks cross-site form posts)
 app.use("/api", (req, res, next) => {
   if (req.method !== "GET" && req.get("X-KB") !== "1") return res.status(403).json({ error: "คำขอไม่ถูกต้อง" });
@@ -87,7 +96,8 @@ const needAdmin = (req, res, next) =>
 /* ---------- auth ---------- */
 const attempts = new Map();
 app.post("/api/login", express.json(), (req, res) => {
-  const key = req.ip;
+  // behind Cloudflare Tunnel every request arrives from 127.0.0.1: count tries per real visitor
+  const key = req.get("cf-connecting-ip") || req.ip;
   const a = attempts.get(key) || { n: 0, until: 0 };
   if (a.until > Date.now()) return res.status(429).json({ error: "ลองผิดหลายครั้ง รอ 5 นาทีแล้วลองใหม่" });
   const { username, password } = req.body || {};
@@ -176,7 +186,7 @@ app.post("/api/users", needAdmin, express.json(), (req, res) => {
   if (String(password || "").length < 8) return res.status(400).json({ error: "รหัสผ่านต้องยาวอย่างน้อย 8 ตัว" });
   if (!["admin", "team"].includes(role)) return res.status(400).json({ error: "สิทธิ์ไม่ถูกต้อง" });
   if (users.byUsername(username)) return res.status(409).json({ error: "มีชื่อผู้ใช้นี้แล้ว" });
-  const id = users.create(username, String(displayName || username).trim().slice(0, 100), password, role);
+  const id = users.create(username, String(displayName || username).trim().slice(0, 100), password, role, 1);
   res.status(201).json(users.get(id));
 });
 app.put("/api/users/:id/password", needTeam, express.json(), (req, res) => {
@@ -184,7 +194,11 @@ app.put("/api/users/:id/password", needTeam, express.json(), (req, res) => {
   if (req.user.role !== "admin" && req.user.id !== id) return res.status(403).json({ error: "เปลี่ยนได้เฉพาะรหัสของตัวเอง" });
   if (String(req.body?.password || "").length < 8) return res.status(400).json({ error: "รหัสผ่านต้องยาวอย่างน้อย 8 ตัว" });
   if (!users.get(id)) return res.status(404).json({ error: "ไม่พบผู้ใช้" });
-  users.setPassword(id, req.body.password);
+  const target = users.get(id);
+  if (String(req.body.password).toLowerCase() === "admin" || String(req.body.password) === target?.username)
+    return res.status(400).json({ error: "รหัสผ่านนี้เดาง่ายเกินไป ใช้รหัสอื่น" });
+  // an admin resetting someone else's password: that person picks their own at next login
+  users.setPassword(id, req.body.password, req.user.id !== id);
   if (req.user.id === id) {
     const s = sessions.create(id);
     setCookie(res, "kbs", s.token, s.maxAge);
