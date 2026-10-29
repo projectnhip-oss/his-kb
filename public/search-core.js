@@ -35,12 +35,15 @@ const view = (x, score) => ({
 });
 
 /** Area filter: { region: 1..13, prov: "น่าน" } or { unknown: true } for cases with no place. */
+/** Filter: { project: "คลาวด์กลาง", region: 1..13, prov: "น่าน" } or { unknown: true } for cases with no place. */
 function areaFilter(f = {}) {
-  const region = Number(f.region) || 0, prov = f.prov || "";
-  if (f.unknown) return (x) => !x.c.prov;
-  if (prov) return (x) => x.c.prov === prov;
-  if (region) return (x) => x.c.region === region;
-  return null;
+  const region = Number(f.region) || 0, prov = f.prov || "", project = f.project || "";
+  let place = null;
+  if (f.unknown) place = (x) => !x.c.prov;
+  else if (prov) place = (x) => x.c.prov === prov;
+  else if (region) place = (x) => x.c.region === region;
+  if (!project) return place;
+  return place ? (x) => x.c.project === project && place(x) : (x) => x.c.project === project;
 }
 function search(all, q, limit = 50, f = {}) {
   const pass = areaFilter(f);

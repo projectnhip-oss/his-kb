@@ -34,6 +34,7 @@
       userVisible: !!a.userVisible, verify: String(a.verify || "").trim(), example: !!a.example,
       causes: (a.causes || []).map((c) => ({ cause: String(c.cause || "").trim(), steps: list(c.steps) })).filter((c) => c.cause || c.steps.length),
       images: (a.images || []).filter((i) => i && i.url),
+      projects: [...new Set(list(a.projects))],
     };
     if (!out.title) fail(400, "ต้องมีชื่อปัญหา");
     if (!out.causes.length || out.causes.some((c) => !c.cause || !c.steps.length)) fail(400, "แต่ละสาเหตุต้องมีชื่อและขั้นตอนอย่างน้อย 1 ขั้น");
@@ -45,7 +46,7 @@
     const u = st.users.find((x) => String(x.id) === String(a.updatedBy));
     return { ...a, updatedByName: u ? u.displayName : null, feedback: { up: base.up + (v === 1), down: base.down + (v === -1), mine: v } };
   };
-  const area = (p) => ({ region: Number(p.get("region")) || 0, prov: p.get("prov") || "", unknown: p.get("area") === "unknown" });
+  const area = (p) => ({ region: Number(p.get("region")) || 0, prov: p.get("prov") || "", unknown: p.get("area") === "unknown", project: p.get("project") || "" });
   const readFile = (blob) => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(blob); });
 
   const freqCache = {};
@@ -100,8 +101,11 @@
     }
     if (p === "/api/cases/facets") {
       needTeam();
-      const R = new Map(), P = new Map();
-      for (const x of index) {
+      const R = new Map(), P = new Map(), J = new Map();
+      for (const x of index) J.set(x.c.project, (J.get(x.c.project) || 0) + 1);
+      const proj = q.get("project") || "";
+      const sub = proj ? index.filter((x) => x.c.project === proj) : index;
+      for (const x of sub) {
         R.set(x.c.region, (R.get(x.c.region) || 0) + 1);
         const k = x.c.prov;
         P.set(k, { prov: k, region: x.c.region, n: (P.get(k)?.n || 0) + 1 });
@@ -109,6 +113,7 @@
       return {
         regions: [...R].sort((a, b) => a[0] - b[0]).map(([region, n]) => ({ region, n })),
         provinces: [...P.values()].sort((a, b) => a.region - b.region || b.n - a.n),
+        total: sub.length, projects: [...J].sort((a, b) => b[1] - a[1]).map(([project, n]) => ({ project, n })),
         how: [], hospitals: { n: 1, provinces: 0 }, // demo: hide the "import a hospital list" hint
       };
     }
@@ -116,7 +121,7 @@
     if (p === "/api/cases/frequent") {
       needTeam();
       const days = Number(q.get("days")) || 0, f = area(q);
-      const key = [days, f.region, f.prov, f.unknown].join("|");
+      const key = [days, f.region, f.prov, f.unknown, f.project].join("|");
       const r = (freqCache[key] ||= core.buildFrequent(index, days, core.areaFilter(f)));
       const limit = Number(q.get("limit")) || 40;
       return { ...r, totalGroups: r.groups.length, groups: r.groups.slice(0, limit) };

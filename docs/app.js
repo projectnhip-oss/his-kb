@@ -3,7 +3,8 @@ const LEVELS = { user: "User แก้เองได้", support: "ทีม S
 const SYSTEMS = ["HOSxP", "EHP", "JHCIS", "Authen สิทธิ์", "เครื่องพิมพ์", "เครือข่าย", "คอมพิวเตอร์", "อื่นๆ"];
 const S = {
   me: null, articles: [], q: "", sys: "ทั้งหมด", userView: false, sel: null, ready: false, loadErr: "",
-  tab: "articles", cases: null, caseStats: null, freq: null, freqDays: 15, freqCache: null, caseErr: "", area: { region: 0, prov: "", unknown: false }, facets: null,
+  project: (() => { try { return localStorage.getItem("kb-project") || ""; } catch { return ""; } })(),
+  view: "home", from: "home", homeFreq: null, rec: null, cases: null, caseStats: null, freq: null, freqDays: 15, freqCache: null, caseErr: "", area: { region: 0, prov: "", unknown: false }, facets: null,
 };
 
 const $ = (s, root = document) => root.querySelector(s);
@@ -11,6 +12,8 @@ const esc = (t) => String(t ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const terms = () => S.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
 const isTeam = () => !!S.me;
 const isAdmin = () => S.me?.role === "admin";
+/** Team member looking as a team member (not previewing what users see). */
+const teamMode = () => isTeam() && !S.userView;
 const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 function hl(text) {
@@ -77,144 +80,83 @@ function matchScore(a, nq) {
 }
 function visible() {
   // compare without spaces: Thai users type with and without them ("ส่ง 13 แฟ้ม" / "ส่ง13แฟ้ม")
-  const nq = kbNorm(S.q);
+  const nq = S.view === "results" ? kbNorm(S.q) : "";
   return S.articles
-    .filter((a) => (!S.userView || a.userVisible) && (S.sys === "ทั้งหมด" || a.system === S.sys))
+    .filter((a) => (!S.userView || a.userVisible) && (S.view !== "all" || S.sys === "ทั้งหมด" || a.system === S.sys))
+    // an article with no project applies to every project
+    .filter((a) => !isTeam() || !S.project || !a.projects?.length || a.projects.includes(S.project))
     .map((a) => [matchScore(a, nq), a])
     .filter(([s]) => s >= 0.6)
     .sort((x, y) => y[0] - x[0] || net(y[1]) - net(x[1]) || (y[1].updatedAt || "").localeCompare(x[1].updatedAt || ""))
     .map(([, a]) => a);
 }
 
-/* ---------- render ---------- */
-function renderHeader() {
-  $("#loginBtn").hidden = isTeam();
-  $("#acctMenu").hidden = !isTeam();
-  $("#userViewWrap").hidden = !isTeam();
-  $("#addBtn").hidden = !isTeam() || S.userView;
-  $("#subtitle").textContent = isTeam() ? "เจอปัญหาที่ User แจ้ง ค้นที่นี่ก่อนถามหัวหน้า" : "ค้นวิธีแก้ปัญหาที่พบบ่อยด้วยตัวเอง";
-  if (S.me) $("#whoami").textContent = `${S.me.displayName} (${S.me.role === "admin" ? "ผู้ดูแลระบบ" : "ทีม"})`;
-  document.querySelectorAll("[data-admin]").forEach((b) => (b.hidden = !isAdmin()));
-  if (!isTeam()) { S.userView = false; S.tab = "articles"; }
-  $("#userView").checked = S.userView;
-  $("#tabs").hidden = !isTeam();
-  document.querySelectorAll("#tabs [data-tab]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === S.tab)));
-  $("#filters").hidden = S.tab !== "articles";
-  $("#work").hidden = S.tab !== "articles";
-  $("#caseView").hidden = S.tab === "articles";
-  $("#n-articles").textContent = S.ready ? visible().length : "";
-  $("#n-cases").textContent = S.cases ? S.cases.total.toLocaleString("th-TH") : "";
-  document.documentElement.style.setProperty("--hdr", $(".top").offsetHeight + 16 + "px");
-}
-function renderFilters() {
-  const used = new Set(S.articles.map((a) => a.system));
-  const opts = ["ทั้งหมด", ...SYSTEMS.filter((s) => used.has(s)), ...[...used].filter((s) => s && !SYSTEMS.includes(s))];
-  if (!opts.includes(S.sys)) S.sys = "ทั้งหมด";
-  $("#filters").innerHTML = opts.map((s) => `<button class="chip" aria-pressed="${s === S.sys}" data-sys="${esc(s)}">${esc(s)}</button>`).join("");
-}
-function renderList() {
-  const v = visible(), list = $("#list");
-  if (S.loadErr) {
-    $("#count").textContent = "";
-    list.innerHTML = `<div class="empty"><h3>โหลดข้อมูลไม่สำเร็จ</h3>${esc(S.loadErr)} ลองรีเฟรชหน้า หรือแจ้งผู้ดูแลระบบ</div>`;
-    return;
-  }
-  if (!S.ready) return;
-  $("#count").textContent = `พบ ${v.length} เรื่อง${S.articles.length !== v.length ? ` จากทั้งหมด ${S.articles.length}` : ""}`;
-  if (!S.articles.length) {
-    list.innerHTML = `<div class="empty"><h3>ยังไม่มีปัญหาในคลัง</h3>${isTeam() ? 'กด "บันทึกปัญหาใหม่" เพื่อเพิ่มเรื่องแรก' : "ทีม Support ยังไม่ได้เปิดเรื่องใดให้ดู"}</div>`;
-    return;
-  }
-  if (!v.length) {
-    list.innerHTML = `<div class="empty"><h3>ไม่พบเรื่องที่ตรงกับ "${esc(S.q)}"</h3>${isTeam() ? "ลองใช้คำอื่นที่ User มักพูด หรือข้อความบางส่วนของ Error ถ้าแก้ได้แล้ว อย่าลืมบันทึกเป็นเรื่องใหม่" : "ลองใช้คำอื่น หรือแจ้งทีม Support"}</div>`;
-    return;
-  }
-  list.innerHTML = v.map((a) => {
-    const said = (a.aliases || []).join(" · ");
-    return `<button class="item" data-id="${esc(a.id)}" aria-current="${a.id === S.sel}">
-      <h3>${hl(a.title)}</h3>${said ? `<div class="said">${hl(said)}</div>` : ""}
-      <div class="tags"><span class="tag">${esc(a.system)}</span><span class="tag lv lv-${esc(a.level)}">${esc(LEVELS[a.level] || "")}</span>${a.example ? '<span class="tag ex">ตัวอย่าง</span>' : ""}${a.causes.length > 1 ? `<span class="tag">${a.causes.length} สาเหตุ</span>` : ""}${a.images?.length ? `<span class="tag">${a.images.length} รูป</span>` : ""}</div>
-    </button>`;
-  }).join("");
-}
-function renderDetail() {
-  const d = $("#detail"), a = S.articles.find((x) => x.id === S.sel);
-  $("#work").classList.toggle("reading", !!a);
-  if (!a) {
-    d.innerHTML = `<div style="color:var(--muted)"><h2 style="color:var(--fg);font-size:1.15rem;margin-bottom:6px">เลือกปัญหาจากรายการ</h2>ค้นด้วยคำที่ User แจ้งมาได้เลย เช่น "ปริ้นไม่ออก" หรือข้อความ Error ระบบจะค้นทั้งชื่อปัญหา คำที่ User ใช้ สาเหตุ และขั้นตอนแก้ไข</div>`;
-    return;
-  }
-  const { up, down, mine } = a.feedback;
-  const canEdit = isTeam() && !S.userView;
-  d.innerHTML = `<button class="btn back" id="backBtn">← กลับไปรายการ</button>
-    ${S.userView ? '<div class="uview-banner" style="margin-bottom:12px">กำลังดูแบบที่ User จะเห็น</div>' : ""}
-    <div class="d-head"><h2>${esc(a.title)}</h2>
-      <div class="d-actions"><button class="btn small" id="linkBtn">คัดลอกลิงก์</button>${canEdit ? `<button class="btn small" id="editBtn">แก้ไข</button><button class="btn small danger" id="delBtn">ลบ</button>` : ""}</div></div>
-    <div class="tags"><span class="tag">${esc(a.system)}</span><span class="tag lv lv-${esc(a.level)}">${esc(LEVELS[a.level] || "")}</span>${isTeam() ? (a.userVisible ? '<span class="tag lv-user">เปิดให้ User เห็น</span>' : '<span class="tag">เฉพาะทีม</span>') : ""}${a.example ? '<span class="tag ex">ข้อมูลตัวอย่าง แก้หรือลบได้</span>' : ""}</div>
-    <div id="delConfirm"></div>
-    ${a.aliases.length ? `<div class="sec"><div class="sec-label">User มักแจ้งว่า</div><div class="said-list">${a.aliases.map((s) => `<span>"${esc(s)}"</span>`).join("")}</div></div>` : ""}
-    ${a.errorMsg ? `<div class="sec"><div class="sec-label">ข้อความ Error</div><div class="err"><span id="errTxt">${esc(a.errorMsg)}</span><button id="copyErr">คัดลอก</button></div></div>` : ""}
-    <div class="sec"><div class="sec-label">สาเหตุและวิธีแก้ (${a.causes.length})</div>
-      ${a.causes.map((c, i) => `<details class="cause" ${i === 0 ? "open" : ""}><summary><span class="n">${String(i + 1).padStart(2, "0")}</span><span>${esc(c.cause)}</span></summary><ol class="steps">${c.steps.map((s) => `<li>${esc(s)}</li>`).join("")}</ol></details>`).join("")}
-    </div>
-    ${a.images?.length ? `<div class="sec"><div class="sec-label">รูปประกอบ</div><div class="gallery">${a.images.map((im, i) => `<figure><a href="${esc(im.url)}" target="_blank" rel="noopener" data-zoom="${i}"><img src="${esc(im.url)}" alt="${esc(im.caption || a.title)}" loading="lazy"></a>${im.caption ? `<figcaption>${esc(im.caption)}</figcaption>` : ""}</figure>`).join("")}</div></div>` : ""}
-    ${a.verify ? `<div class="sec"><div class="sec-label">ตรวจว่าแก้สำเร็จ</div><div class="verify">${esc(a.verify)}</div></div>` : ""}
-    <div class="feedback"><span>วิธีนี้ช่วยได้ไหม</span>
-      <button class="btn" id="fbUp" aria-pressed="${mine === 1}">ช่วยได้ · ${up}</button>
-      <button class="btn" id="fbDown" aria-pressed="${mine === -1}">ไม่ได้ผล · ${down}</button></div>
-    <div class="foot">${a.updatedAt ? `อัปเดตล่าสุด ${new Date(a.updatedAt).toLocaleString("th-TH", { dateStyle: "medium", timeStyle: "short" })}` : ""}${isTeam() && a.updatedByName ? " โดย " + esc(a.updatedByName) : ""}</div>`;
-}
-function render() {
-  renderFilters();
-  renderHeader();
-  if (S.tab === "articles") { renderList(); renderDetail(); }
-  else if (S.tab === "cases") renderCases();
-  else renderFrequent();
-}
-
 /* ---------- past cases ---------- */
 const fmtDate = (d) => (d ? new Date(d + "T00:00:00").toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" }) : "");
 let caseTimer = null, caseSeq = 0;
 function searchCases(immediate) {
-  if (!isTeam()) return;
+  if (!isTeam() || !S.q.trim()) return;
   clearTimeout(caseTimer);
   caseTimer = setTimeout(async () => {
     const seq = ++caseSeq;
     try {
-      const r = await api("GET", "/api/cases/search?q=" + encodeURIComponent(S.q) + areaQS());
+      const r = await api("GET", "/api/cases/search?limit=30&q=" + encodeURIComponent(S.q) + (S.project ? "&project=" + encodeURIComponent(S.project) : ""));
       if (seq !== caseSeq) return; // a newer search already went out
       S.cases = r;
       S.caseErr = "";
     } catch (e) { S.caseErr = e.message; }
-    renderHeader();
-    if (S.tab === "cases") renderCases();
+    if (S.view === "results") renderView();
   }, immediate ? 0 : 250);
 }
 async function loadCaseStats() {
   if (!isTeam()) return;
   try { S.caseStats = await api("GET", "/api/cases/stats"); } catch { S.caseStats = null; }
-  try { S.facets = await api("GET", "/api/cases/facets"); } catch { S.facets = null; }
+  try { S.facets = await api("GET", "/api/cases/facets?project=" + encodeURIComponent(S.project)); } catch { S.facets = null; }
   try { S.sync = await api("GET", "/api/sync"); } catch { S.sync = null; }
 }
+
 /* ---------- area filter: health region / province ---------- */
 const pad2 = (n) => String(n).padStart(2, "0");
 function areaQS() {
-  const a = S.area;
-  if (a.unknown) return "&area=unknown";
-  return (a.region ? `&region=${a.region}` : "") + (a.prov ? `&prov=${encodeURIComponent(a.prov)}` : "");
+  const a = S.area, p = S.project ? `&project=${encodeURIComponent(S.project)}` : "";
+  if (a.unknown) return "&area=unknown" + p;
+  return (a.region ? `&region=${a.region}` : "") + (a.prov ? `&prov=${encodeURIComponent(a.prov)}` : "") + p;
 }
-const areaKey = () => `${S.area.unknown ? "u" : S.area.region}|${S.area.prov}`;
+const areaKey = () => `${S.area.unknown ? "u" : S.area.region}|${S.area.prov}|${S.project}`;
 function areaLabel() {
   const a = S.area;
-  if (a.unknown) return "เคสที่ไม่ทราบพื้นที่";
-  if (a.prov) return `จ.${a.prov}`;
-  if (a.region) return `เขตสุขภาพที่ ${a.region}`;
-  return "";
+  const where = a.unknown ? "เคสที่ไม่ทราบพื้นที่" : a.prov ? `จ.${a.prov}` : a.region ? `เขตสุขภาพที่ ${a.region}` : "";
+  return [S.project && `โครงการ${S.project}`, where].filter(Boolean).join(" ");
 }
+
+/* ---------- project: one choice for every tab, remembered per browser ---------- */
+function knownProjects() {
+  const set = new Map((S.facets?.projects || []).map((p) => [p.project, p.n]));
+  for (const a of S.articles) for (const p of a.projects || []) if (!set.has(p)) set.set(p, 0);
+  return [...set];
+}
+function renderProjectSelect() {
+  const list = knownProjects();
+  $("#projWrap").hidden = !isTeam() || !list.length;
+  if (!list.length) return;
+  if (S.project && !list.some(([p]) => p === S.project)) list.push([S.project, 0]);
+  $("#f-project").innerHTML = `<option value="">ทุกโครงการ</option>` +
+    list.map(([p, n]) => `<option value="${esc(p)}" ${p === S.project ? "selected" : ""}>${esc(p)}${n ? ` (${n.toLocaleString("th-TH")})` : ""}</option>`).join("");
+}
+$("#f-project").addEventListener("change", async (e) => {
+  S.project = e.target.value;
+  try { S.project ? localStorage.setItem("kb-project", S.project) : localStorage.removeItem("kb-project"); } catch {}
+  S.area = { region: 0, prov: "", unknown: false }; // regions differ between projects
+  S.cases = null; S.homeFreq = null; S.freqCache = null;
+  render();
+  try { S.facets = await api("GET", "/api/cases/facets?project=" + encodeURIComponent(S.project)); } catch {}
+  searchCases(true);
+  render();
+});
 function areaBar() {
   const f = S.facets;
   if (!f || !f.regions.length) return "";
-  const a = S.area, total = S.caseStats?.n || 0;
+  const a = S.area, total = f.total ?? S.caseStats?.n ?? 0;
   const known = f.regions.reduce((t, r) => t + r.n, 0);
   const regionVal = a.unknown ? "unknown" : String(a.region || "");
   const provs = a.region ? f.provinces.filter((p) => p.region === a.region) : [];
@@ -232,16 +174,6 @@ function caseLoc(c) {
   const est = c.locSrc === "channel" ? ' <span class="est" title="ประมาณจากช่องทางรับแจ้งหรือโครงการ">ประมาณการ</span>' : "";
   return `<span class="loc">เขต ${pad2(c.region)} · ${esc(c.prov)}${c.hname ? ` · ${esc(c.hname)}` : ""}${c.hcode ? ` (${esc(c.hcode)})` : ""}${est}</span>`;
 }
-$("#caseView").addEventListener("change", (e) => {
-  if (e.target.id === "f-region") {
-    const v = e.target.value;
-    S.area = { region: v && v !== "unknown" ? Number(v) : 0, prov: "", unknown: v === "unknown" };
-  } else if (e.target.id === "f-prov") S.area = { ...S.area, prov: e.target.value };
-  else return;
-  S.cases = null;
-  if (S.tab === "cases") { $("#caseView").innerHTML = areaBar() + '<div class="meta-line">กำลังค้นหา…</div>'; searchCases(true); }
-  else renderFrequent();
-});
 
 const fmtTime = (iso) => (iso ? new Date(iso).toLocaleString("th-TH", { dateStyle: "medium", timeStyle: "short" }) : "");
 /** One line saying how fresh the case data is; a warning when the automatic pull has stopped. */
@@ -260,44 +192,7 @@ function noCasesYet() {
     ? '<button class="btn small" data-open-sync>เชื่อมต่อระบบรับแจ้งปัญหา (API)</button> เพื่อดึงเคสอัตโนมัติ หรือ <button class="btn small" data-import-cases>นำเข้าเคสจาก Excel</button> ที่ Export มา ระบบจะเก็บเฉพาะเคสที่ปิดแล้วและมีวิธีแก้'
     : "ให้ผู้ดูแลระบบนำเข้าไฟล์ Excel ที่ Export จากระบบรับแจ้งปัญหา"}</div>`;
 }
-function renderCases() {
-  const v = $("#caseView");
-  if (S.caseErr) { v.innerHTML = `<div class="empty"><h3>ค้นเคสไม่สำเร็จ</h3>${esc(S.caseErr)}</div>`; return; }
-  if (!S.cases || !S.caseStats) { v.innerHTML = `<div class="meta-line">กำลังโหลด…</div>`; return; }
-  if (!S.caseStats.n) { v.innerHTML = noCasesYet(); return; }
-  const st = S.caseStats, r = S.cases, q = S.q.trim();
-  const range = `${fmtDate(st.first)} – ${fmtDate(st.last)}`;
-  const inArea = areaLabel() ? ` ใน${areaLabel()}` : "";
-  let html = syncNote() + areaBar() + `<div class="meta-line"><span>${q ? `พบ ${r.total.toLocaleString("th-TH")} เคสที่คล้ายกัน${inArea}` : `เคสล่าสุด${inArea}`} จากทั้งหมด ${st.n.toLocaleString("th-TH")} เคส (${range})</span><span>${q ? "เรียงตามความคล้าย" : ""}</span></div>`;
-  if (!r.results.length) {
-    v.innerHTML = html + `<div class="empty"><h3>ไม่พบเคสที่คล้ายกับ "${esc(q)}"${inArea}</h3>ลองพิมพ์สั้นลง หรือใช้คำหลักของปัญหา เช่น "ปิดสิทธิ", "สติกเกอร์", "13 แฟ้ม"</div>`;
-    return;
-  }
-  // fixes that several similar cases share are the safest first thing to try
-  if (q) {
-    const groups = new Map();
-    for (const c of r.results) {
-      const g = groups.get(c.solKey) || { text: c.solution, n: 0 };
-      g.n++;
-      groups.set(c.solKey, g);
-    }
-    const common = [...groups.values()].filter((g) => g.n >= 2).sort((a, b) => b.n - a.n).slice(0, 3);
-    if (common.length)
-      html += `<div class="common-fixes"><h3>วิธีแก้ที่ใช้ซ้ำในเคสที่คล้ายกัน</h3>${common
-        .map((g) => `<div class="fix-row"><span class="fix-n">${g.n} เคส</span><span style="white-space:pre-wrap">${esc(g.text)}</span></div>`).join("")}</div>`;
-  }
-  html += `<div class="case-list">${r.results.map((c) => `<article class="case">
-      <div class="q">${hl(c.detail)}</div>
-      ${c.cause ? `<div class="c">${esc(c.cause)}</div>` : ""}
-      <div class="a">${hl(c.solution)}</div>
-      <div class="case-foot">
-        ${c.type ? `<span class="tag">${esc(c.type)}</span>` : ""}${c.project ? `<span class="tag">${esc(c.project)}</span>` : ""}
-        ${caseLoc(c)}<span>${fmtDate(c.date)}</span>${c.solver ? `<span>แก้โดย ${esc(c.solver)}</span>` : ""}${c.duration ? `<span>ใช้เวลา ${esc(c.duration)}</span>` : ""}${c.caseNo ? `<span>${esc(c.caseNo)}</span>` : ""}
-        <button class="btn small" data-promote="${esc(c.id)}">สร้างบทความจากเคสนี้</button>
-      </div></article>`).join("")}</div>`;
-  if (r.total > r.results.length) html += `<div class="meta-line"><span>แสดง ${r.results.length} เคสแรก พิมพ์คำค้นให้เจาะจงขึ้นเพื่อดูเคสที่ตรงกว่า</span></div>`;
-  v.innerHTML = html;
-}
+
 const FREQ_DAYS = [[7, "7 วัน"], [15, "15 วัน"], [30, "30 วัน"], [0, "ทั้งหมด"]];
 const grams3 = (t) => {
   const x = kbNorm(t).replace(/\s/g, ""), out = new Set();
@@ -345,65 +240,7 @@ function singlesBlock(r) {
       <div class="case-foot">${c.type ? `<span class="tag">${esc(c.type)}</span>` : ""}${caseLoc(c)}<span>${fmtDate(c.date)}</span>${c.solver ? `<span>แก้โดย ${esc(c.solver)}</span>` : ""}
         <button class="btn small" data-promote-single="${esc(c.id)}">สร้างบทความจากเคสนี้</button></div>
     </article>`).join("")}</div>
-    ${r.totalSingles > r.singles.length ? `<div class="meta-line"><span>แสดง ${r.singles.length} เคสล่าสุด ดูทั้งหมดได้ที่แท็บเคสที่เคยแก้</span></div>` : ""}`;
-}
-async function renderFrequent() {
-  const v = $("#caseView");
-  if (!S.caseStats) { v.innerHTML = `<div class="meta-line">กำลังโหลด…</div>`; return; }
-  if (!S.caseStats.n) { v.innerHTML = noCasesYet(); return; }
-  const days = S.freqDays;
-  const picker = `<div class="seg" role="group" aria-label="ช่วงเวลา">${FREQ_DAYS.map(([d, l]) => `<button data-days="${d}" aria-pressed="${d === days}">${l}</button>`).join("")}</div>`;
-  S.freqCache ||= {};
-  const key = days + "|" + areaKey();
-  if (!S.freqCache[key]) {
-    v.innerHTML = `<div class="freq-head">${picker}${areaBar()}<span class="meta-line">กำลังจัดกลุ่มปัญหา…</span></div>`;
-    try { S.freqCache[key] = await api("GET", `/api/cases/frequent?limit=40&days=${days}${areaQS()}`); }
-    catch (e) { v.innerHTML = `<div class="empty"><h3>โหลดไม่สำเร็จ</h3>${esc(e.message)}</div>`; return; }
-    if (S.tab !== "frequent" || S.freqDays !== days || days + "|" + areaKey() !== key) return;
-  }
-  const r = S.freqCache[key];
-  S.freq = r.groups;
-  const span = r.from ? `${fmtDate(r.from)} – ${fmtDate(r.to)}` : `${fmtDate(S.caseStats.first)} – ${fmtDate(S.caseStats.last)}`;
-  const note = r.days && !r.prevComplete ? " ยังไม่มีข้อมูลย้อนหลังพอจะเทียบกับช่วงก่อนหน้า" : "";
-  let html = syncNote() + `<div class="freq-head">${picker}${areaBar()}<span class="meta-line">${areaLabel() ? areaLabel() + " · " : ""}${r.days ? `${r.days} วันล่าสุดของข้อมูล` : "ข้อมูลทั้งหมด"} (${span}) · ${r.totalInWindow.toLocaleString("th-TH")} เคส · ปัญหาที่แจ้งซ้ำ ${r.totalGroups ?? r.groups.length} กลุ่ม${(r.totalGroups ?? 0) > r.groups.length ? ` (แสดง ${r.groups.length} กลุ่มแรก)` : ""}${note}</span></div>`;
-  if (!r.groups.length) {
-    html += `<div class="notice">ไม่มีปัญหาที่ถูกแจ้งซ้ำ${areaLabel() ? `ใน${areaLabel()} ` : ""}ในช่วงนี้ ${r.totalSingles ? `ด้านล่างคือเคสทั้ง ${r.totalSingles} เคสที่แจ้งเข้ามา พร้อมวิธีแก้` : "ลองเลือกช่วงเวลาที่ยาวขึ้น"}</div>`;
-    v.innerHTML = html + singlesBlock(r);
-    return;
-  }
-  html += r.groups.map((f, i) => {
-    const art = articleFor(f);
-    let fix;
-    if (art) {
-      const c = art.causes[0], top = f.solutions[0];
-      fix = `<div class="fix-src">ขั้นตอนจากบทความ "${esc(art.title)}"${art.causes.length > 1 ? ` (สาเหตุที่ 1 จาก ${art.causes.length})` : ""}</div>
-        ${c.cause ? `<div class="fix-cause">${esc(c.cause)}</div>` : ""}
-        <ol class="steps">${c.steps.map((x) => `<li>${esc(x)}</li>`).join("")}</ol>
-        ${top ? `<div class="fix-src">วิธีแก้ที่ใช้บ่อยในเคส</div><ul class="other-fixes"><li>${esc(clip(top.text, 220))}${top.n > 1 ? ` <span class="fix-n">${top.n} เคส</span>` : ""}</li></ul>` : ""}`;
-    } else if (f.solutions.length) {
-      const [top, ...rest] = f.solutions;
-      fix = `<div class="fix-src">วิธีแก้ที่ใช้บ่อยที่สุด${top.n > 1 ? ` <span class="fix-n">${top.n} เคส</span>` : ""}</div>
-        <ol class="steps">${splitSteps(top.text).map((x) => `<li>${esc(clip(x, 400))}</li>`).join("")}</ol>
-        ${rest.length ? `<div class="fix-src">วิธีอื่นที่เคยใช้</div><ul class="other-fixes">${rest.map((x) => `<li>${esc(clip(x.text, 220))}${x.n > 1 ? ` <span class="fix-n">${x.n} เคส</span>` : ""}</li>`).join("")}</ul>` : ""}`;
-    } else fix = '<div class="variants">ยังไม่มีวิธีแก้ที่เขียนไว้ชัดเจน</div>';
-    return `<article class="freq">
-      <div class="freq-n">${f.count}<small>เคส</small></div>
-      <div class="freq-title"><h3>${esc(f.title)}</h3>${trendChip(f, r)}</div>
-      ${f.variants.length ? `<div class="variants">แจ้งแบบอื่น: ${f.variants.map((x) => `"${esc(clip(x, 60))}"`).join(", ")}</div>` : '<div class="variants"></div>'}
-      <div class="freq-fix">${fix}</div>
-      <div class="freq-actions"><button class="btn small" data-freq-search="${i}">ดูเคสทั้งหมด</button>${art
-        ? `<button class="btn small" data-open-article="${esc(art.id)}">เปิดบทความ</button>`
-        : `<button class="btn small primary" data-freq-promote="${i}">สร้างบทความ</button>`}</div>
-    </article>`;
-  }).join("");
-  html += singlesBlock(r);
-  v.innerHTML = html;
-}
-function switchTab(t) {
-  S.tab = t;
-  if (t !== "articles" && !S.caseStats) loadCaseStats().then(render);
-  if (t === "cases" && !S.cases) searchCases(true);
-  render();
+    ${r.totalSingles > r.singles.length ? `<div class="meta-line"><span>แสดง ${r.singles.length} เคสล่าสุด พิมพ์ค้นหาเพื่อดูเคสอื่น</span></div>` : ""}`;
 }
 
 /** Turn a free-text fix into numbered steps when it already reads as a list. */
@@ -417,7 +254,7 @@ function splitSteps(text) {
 function draftFromCase(c) {
   return {
     title: c.detail.split("\n")[0].slice(0, 200), aliases: [c.detail.split("\n")[0].slice(0, 200)], errorMsg: "",
-    system: "EHP", level: "support", userVisible: false,
+    system: "EHP", level: "support", userVisible: false, projects: c.project ? [c.project] : [],
     causes: [{ cause: c.cause || "", steps: splitSteps(c.solution) }], verify: "", images: [],
   };
 }
@@ -425,38 +262,10 @@ function draftFromCluster(f) {
   const sols = f.solutions.length ? f.solutions : [{ text: "" }];
   return {
     title: f.title.split("\n")[0].slice(0, 200), aliases: [f.title, ...f.variants].map((x) => x.split("\n")[0].slice(0, 200)),
-    errorMsg: "", system: "EHP", level: "support", userVisible: false,
+    errorMsg: "", system: "EHP", level: "support", userVisible: false, projects: S.project ? [S.project] : [],
     causes: sols.map((s, i) => ({ cause: s.text ? `วิธีที่ ${i + 1}${s.n > 1 ? ` (ใช้แก้ ${s.n} เคส)` : ""}` : "", steps: s.text ? splitSteps(s.text) : [] })), verify: "", images: [],
   };
 }
-
-$("#tabs").addEventListener("click", (e) => { const b = e.target.closest("[data-tab]"); if (b) switchTab(b.dataset.tab); });
-$("#caseView").addEventListener("click", (e) => {
-  const t = e.target;
-  if (t.matches("[data-import-cases]")) return openImportCases();
-  if (t.dataset.promote) {
-    const c = S.cases.results.find((x) => x.id === t.dataset.promote);
-    if (c) openEditor(null, draftFromCase(c));
-    return;
-  }
-  if (t.dataset.freqSearch) {
-    S.q = S.freq[t.dataset.freqSearch].title.split("\n")[0];
-    $("#q").value = S.q;
-    S.cases = null;
-    searchCases(true);
-    switchTab("cases");
-    return;
-  }
-  if (t.dataset.freqPromote) return openEditor(null, draftFromCluster(S.freq[t.dataset.freqPromote]));
-  if (t.matches("[data-open-sync]")) return openSync();
-  if (t.dataset.promoteSingle) {
-    const c = (S.singles || []).find((x) => x.id === t.dataset.promoteSingle);
-    if (c) openEditor(null, draftFromCase(c));
-    return;
-  }
-  if (t.dataset.days != null) { S.freqDays = Number(t.dataset.days); return renderFrequent(); }
-  if (t.dataset.openArticle) { S.tab = "articles"; render(); select(t.dataset.openArticle); }
-});
 
 const SYNC_EVERY = [[0, "ปิดการดึงอัตโนมัติ"], [30, "ทุก 30 นาที"], [60, "ทุก 1 ชั่วโมง"], [180, "ทุก 3 ชั่วโมง"], [360, "ทุก 6 ชั่วโมง"], [1440, "วันละครั้ง"]];
 async function openSync() {
@@ -519,7 +328,7 @@ async function openSync() {
       try {
         const r = await api("POST", "/api/sync/run");
         draw(r.settings, `ดึงข้อมูลสำเร็จ เก็บ ${r.result.kept.toLocaleString("th-TH")} เคส`);
-        S.cases = null; S.freqCache = null;
+        S.cases = null; S.freqCache = null; S.homeFreq = null;
         await loadCaseStats();
         searchCases(true);
         render();
@@ -557,7 +366,7 @@ function openImportHospitals() {
       const m = r.matched;
       $("#ihResult").innerHTML = `<div class="verify">นำเข้า ${r.added.toLocaleString("th-TH")} แห่ง${r.badCode ? ` · ข้ามรหัสไม่ถูกต้อง ${r.badCode}` : ""}${r.noProvince ? ` · ไม่มีจังหวัด ${r.noProvince}` : ""}<br>
         จับคู่เคส: จากรหัส ${m.code} · จากชื่อ รพ.สต. ${m.name} · จากคอลัมน์จังหวัด ${m.province} · ประมาณจากช่องทางรับแจ้ง ${m.channel} · ไม่ทราบ ${m.none}</div>`;
-      S.cases = null; S.freqCache = null;
+      S.cases = null; S.freqCache = null; S.homeFreq = null;
       await loadCaseStats();
       searchCases(true);
       render();
@@ -595,7 +404,7 @@ function openImportCases() {
         อ่านได้ ${r.rows.toLocaleString("th-TH")} แถว · <b>เพิ่มใหม่ ${r.added.toLocaleString("th-TH")} เคส</b> · มีอยู่แล้ว ${r.duplicate.toLocaleString("th-TH")}<br>
         ข้าม: ยังไม่ปิดเคส ${r.notClosed} · ไม่มีวิธีแก้ที่ใช้ได้ ${r.noSolution} · ไม่มีรายละเอียดปัญหา ${r.noDetail}<br>
         ลบข้อมูลติดต่อออกจาก ${r.privacyRemoved} เคส${r.hasCause ? " · มีคอลัมน์สาเหตุ" : ""}</div>`;
-      S.cases = null; S.freq = null; S.freqCache = null;
+      S.cases = null; S.freq = null; S.freqCache = null; S.homeFreq = null;
       await loadCaseStats();
       searchCases(true);
       render();
@@ -603,14 +412,6 @@ function openImportCases() {
     btn.disabled = false;
     btn.textContent = "นำเข้า";
   };
-}
-
-function select(id) {
-  S.sel = id;
-  history.replaceState(null, "", id ? "#" + encodeURIComponent(id) : location.pathname);
-  renderList();
-  renderDetail();
-  if (id && matchMedia("(max-width:820px)").matches) scrollTo(0, 0);
 }
 
 /* ---------- sheets ---------- */
@@ -651,6 +452,7 @@ function openLogin() {
       await load();
       await loadCaseStats();
       searchCases(true);
+      render();
     } catch (err) { $("#formErr").textContent = err.message; }
   };
 }
@@ -688,6 +490,7 @@ function openPassword(user = S.me, forced = false) {
         await load();
         await loadCaseStats();
         searchCases(true);
+        render();
       }
     } catch (err) { $("#formErr").textContent = err.message; }
   };
@@ -778,7 +581,8 @@ function imgBlock(im) {
 }
 function openEditor(a, draft) {
   const isNew = !a;
-  a = a || draft || { title: "", aliases: [], errorMsg: "", system: "HOSxP", level: "support", userVisible: false, causes: [{ cause: "", steps: [] }], verify: "", images: [] };
+  a = a || draft || { title: "", aliases: [], errorMsg: "", system: "HOSxP", level: "support", userVisible: false, causes: [{ cause: "", steps: [] }], verify: "", images: [], projects: S.project ? [S.project] : [] };
+  const projOpts = [...new Set([...knownProjects().map(([p]) => p), ...(a.projects || [])])];
   const sysOpts = [...new Set([...SYSTEMS, a.system])].map((s) => `<option ${s === a.system ? "selected" : ""}>${esc(s)}</option>`).join("");
   const sh = openSheet(`<form class="sheet-panel" id="edForm" novalidate>
     <h2>${!isNew ? "แก้ไขปัญหา" : draft ? "สร้างบทความจากเคสเก่า" : "บันทึกปัญหาใหม่"}</h2>
@@ -790,6 +594,7 @@ function openEditor(a, draft) {
       <div class="field"><label for="f-sys">ระบบ</label><select id="f-sys">${sysOpts}</select></div>
       <div class="field"><label for="f-lv">ใครแก้ได้</label><select id="f-lv">${Object.entries(LEVELS).map(([k, v]) => `<option value="${k}" ${k === a.level ? "selected" : ""}>${v}</option>`).join("")}</select></div>
     </div>
+    ${projOpts.length ? `<div class="field"><label>ใช้กับโครงการ</label><div class="proj-checks">${projOpts.map((p, i) => `<label class="toggle"><input type="checkbox" id="f-proj-${i}" data-proj="${esc(p)}" ${(a.projects || []).includes(p) ? "checked" : ""}> ${esc(p)}</label>`).join("")}</div><span class="hint">ไม่เลือกเลย = ใช้ได้ทุกโครงการ</span></div>` : ""}
     <label class="toggle"><input type="checkbox" id="f-uv" ${a.userVisible ? "checked" : ""}> เปิดให้ User เห็นเรื่องนี้ (อย่าเปิดถ้ามีขั้นตอนเกี่ยวกับ Database, Server หรือรหัสผ่าน)</label>
     <div class="field"><label>สาเหตุและขั้นตอนแก้ไข</label><div id="causes" style="display:grid;gap:10px">${a.causes.map(causeBlock).join("")}</div>
       <button type="button" class="btn" id="addCause" style="justify-self:start;margin-top:6px">+ เพิ่มสาเหตุ</button></div>
@@ -847,6 +652,7 @@ function openEditor(a, draft) {
       title: $("#f-title").value.trim(), aliases: lines($("#f-alias").value), errorMsg: $("#f-err").value.trim(),
       system: $("#f-sys").value, level: $("#f-lv").value, userVisible: $("#f-uv").checked, causes, verify: $("#f-verify").value.trim(),
       images: [...sh.querySelectorAll("[data-img]")].map((el) => ({ url: el.dataset.img, caption: $("input", el).value.trim() })),
+      projects: [...sh.querySelectorAll("[data-proj]:checked")].map((el) => el.dataset.proj),
       example: false,
     };
     if (!body.title) { $("#formErr").textContent = "ใส่ชื่อปัญหาก่อนบันทึก"; return; }
@@ -856,51 +662,15 @@ function openEditor(a, draft) {
       const saved = isNew ? await api("POST", "/api/articles", body) : await api("PUT", "/api/articles/" + encodeURIComponent(a.id), body);
       closeSheet();
       toast("บันทึกแล้ว");
-      S.sel = saved.id;
-      S.tab = "articles";
+      S.homeFreq = null;
       await load();
-      select(saved.id);
+      openArticle(saved.id);
     } catch (err) {
       $("#saveEd").disabled = false;
       $("#formErr").textContent = err.status === 401 ? "หมดเวลาเข้าสู่ระบบ กรุณาเข้าสู่ระบบใหม่ (ข้อมูลในฟอร์มยังอยู่)" : err.message;
     }
   };
 }
-
-/* ---------- events ---------- */
-$("#q").addEventListener("input", (e) => {
-  S.q = e.target.value;
-  if (S.tab === "frequent" && S.q.trim()) { S.tab = "cases"; render(); }
-  if (S.tab === "articles") renderList();
-  renderHeader();
-  searchCases();
-});
-$("#userView").addEventListener("change", (e) => { S.userView = e.target.checked; render(); });
-$("#filters").addEventListener("click", (e) => { const b = e.target.closest("[data-sys]"); if (!b) return; S.sys = b.dataset.sys; render(); });
-$("#list").addEventListener("click", (e) => { const b = e.target.closest(".item"); if (b) select(b.dataset.id); });
-$("#loginBtn").addEventListener("click", openLogin);
-$("#addBtn").addEventListener("click", () => openEditor());
-
-$("#acctBtn").addEventListener("click", (e) => {
-  e.stopPropagation();
-  const l = $("#acctList");
-  l.hidden = !l.hidden;
-  $("#acctBtn").setAttribute("aria-expanded", String(!l.hidden));
-});
-document.addEventListener("click", () => { $("#acctList").hidden = true; $("#acctBtn").setAttribute("aria-expanded", "false"); });
-$("#mPassword").addEventListener("click", () => openPassword());
-$("#mUsers").addEventListener("click", openUsers);
-$("#mImport").addEventListener("click", openImport);
-$("#mImportCases").addEventListener("click", openImportCases);
-$("#mSync").addEventListener("click", openSync);
-$("#mImportHosp").addEventListener("click", openImportHospitals);
-$("#mExport").addEventListener("click", () => { if (window.KB_DEMO) return window.KB_DEMO.exportJson(); location.href = "/api/export"; });
-$("#mLogout").addEventListener("click", async () => {
-  await api("POST", "/api/logout").catch(() => {});
-  S.me = null; S.userView = false; S.tab = "articles"; S.cases = null; S.freq = null; S.freqCache = null; S.caseStats = null;
-  toast("ออกจากระบบแล้ว");
-  load();
-});
 
 /* ---------- image viewer: opens in the page (a data: image cannot open in a new tab) ---------- */
 function openViewer(images, i) {
@@ -932,23 +702,435 @@ function openViewer(images, i) {
   v.querySelector("[data-v='x']").focus();
 }
 
-$("#detail").addEventListener("click", async (e) => {
-  const z = e.target.closest("[data-zoom]");
-  if (z) {
-    const a = S.articles.find((x) => x.id === S.sel);
-    if (a?.images?.length) { e.preventDefault(); openViewer(a.images, Number(z.dataset.zoom)); }
-    return;
+/* ---------- views: home · results · article · all · overview ---------- */
+const view = () => $("#view");
+const levelTag = (a) => `<span class="tag lv lv-${esc(a.level)}">${esc(LEVELS[a.level] || "")}</span>`;
+const projTags = (a) => (isTeam() && a.projects?.length && !S.project ? a.projects.map((p) => `<span class="tag proj-tag">${esc(p)}</span>`).join("") : "");
+
+function renderHeader() {
+  renderProjectSelect();
+  $("#loginBtn").hidden = isTeam();
+  $("#acctMenu").hidden = !isTeam();
+  $("#addBtn").hidden = !isTeam() || S.userView;
+  if (S.me) {
+    $("#whoami").textContent = `${S.me.displayName} (${S.me.role === "admin" ? "ผู้ดูแลระบบ" : "ทีม"})`;
+    $("#acctName").textContent = S.me.displayName;
   }
+  document.querySelectorAll("[data-admin]").forEach((b) => (b.hidden = !isAdmin()));
+  document.querySelectorAll("[data-team]").forEach((b) => (b.hidden = !isTeam()));
+  if (!isTeam()) { S.userView = false; if (S.view === "overview") S.view = "home"; }
+  $("#userView").checked = S.userView;
+  const navOf = { home: "home", results: "home", article: S.from === "all" ? "all" : "home", all: "all", overview: "overview" };
+  document.querySelectorAll("[data-nav]").forEach((a) => a.setAttribute("aria-current", String(a.dataset.nav === navOf[S.view])));
+  const showSearch = S.view === "home" || S.view === "results";
+  $("#searchArea").hidden = !showSearch;
+  $("#searchArea").classList.toggle("hero", S.view === "home");
+  $("#heroQ").textContent = isTeam() ? "User แจ้งว่าอะไร?" : "เจอปัญหาอะไรอยู่?";
+  renderExamples();
+}
+
+/** A few one-click searches under the box, from what is reported most right now. */
+function renderExamples() {
+  const box = $("#examples");
+  if (S.view !== "home") { box.innerHTML = ""; return; }
+  let words = [];
+  if (teamMode() && S.homeFreq?.groups?.length) words = S.homeFreq.groups.map((g) => g.title.split("\n")[0]);
+  else words = popular().flatMap((a) => [a.aliases?.[0] || a.title]);
+  words = [...new Set(words.map((w) => clip(w.trim(), 28)))].slice(0, 4);
+  box.innerHTML = words.length ? `<span>ลองค้น:</span>${words.map((w) => `<button type="button" class="chip" data-try="${esc(w.replace(/…$/, ""))}">${esc(w)}</button>`).join("")}` : "";
+}
+
+function render() { renderHeader(); renderView(); }
+function renderView() {
+  if (S.view === "home") return renderHome();
+  if (S.view === "results") return renderResults();
+  if (S.view === "article") return renderArticle();
+  if (S.view === "all") return renderAll();
+  if (S.view === "overview") return renderOverview();
+}
+
+/** Where a click goes; keeps the address bar in step so links can be shared and Back works. */
+function go(v, opts = {}) {
+  if (v !== "article") S.from = v;
+  S.view = v;
+  if (opts.id !== undefined) S.sel = opts.id;
+  const hash = v === "article" ? "#" + encodeURIComponent(S.sel) : v === "all" ? "#all" : v === "overview" ? "#overview" : "";
+  if (location.hash !== hash) history.pushState(null, "", hash || location.pathname);
+  if (v === "overview" && !S.caseStats) loadCaseStats().then(render);
+  render();
+  if (!opts.keepScroll) scrollTo(0, 0);
+}
+const openArticle = (id) => go("article", { id });
+function runSearch(q) {
+  S.q = q;
+  $("#q").value = q;
+  S.cases = null;
+  searchCases(true);
+  go(q.trim() ? "results" : "home");
+}
+
+const popular = () => visible().slice().sort((x, y) => net(y) - net(x) || (y.updatedAt || "").localeCompare(x.updatedAt || "")).slice(0, 6);
+
+/* ---------- home ---------- */
+async function loadHomeFreq() {
+  if (!teamMode() || S.homeFreq) return;
+  const key = S.project;
+  try {
+    let r = await api("GET", `/api/cases/frequent?limit=6&days=7${S.project ? `&project=${encodeURIComponent(S.project)}` : ""}`);
+    if (!r.groups.length) r = await api("GET", `/api/cases/frequent?limit=6&days=30${S.project ? `&project=${encodeURIComponent(S.project)}` : ""}`);
+    if (key === S.project) S.homeFreq = r;
+  } catch { S.homeFreq = { groups: [], days: 7 }; }
+  if (S.view === "home") { renderExamples(); renderHome(); }
+}
+function firstFix(f) {
+  const art = articleFor(f);
+  if (art) return { text: art.causes[0]?.steps[0] || "", from: "บทความ" };
+  const s = f.solutions[0];
+  return s ? { text: splitSteps(s.text)[0] || s.text, from: s.n > 1 ? `ใช้แก้ ${s.n} เคส` : "จากเคสเก่า" } : { text: "", from: "" };
+}
+function renderHome() {
+  if (!S.ready && !S.loadErr) { view().innerHTML = ""; return; }
+  if (S.loadErr) { view().innerHTML = `<div class="empty"><h3>โหลดข้อมูลไม่สำเร็จ</h3>${esc(S.loadErr)} ลองรีเฟรชหน้า</div>`; return; }
+  let html = "";
+  if (teamMode()) {
+    if (!S.homeFreq) { loadHomeFreq(); html += `<div class="section-h"><h2>เจอบ่อยช่วงนี้</h2></div><div class="qgrid">${'<div class="qcard skeleton"></div>'.repeat(3)}</div>`; }
+    else if (S.homeFreq.groups.length) {
+      const r = S.homeFreq;
+      html += `<div class="section-h"><h2>เจอบ่อย ${r.days} วันล่าสุด</h2><a href="#overview" data-nav-to="overview">ดูภาพรวมทั้งหมด →</a></div>
+        <div class="qgrid">${r.groups.map((f, i) => {
+          const fx = firstFix(f);
+          return `<button class="qcard" data-try="${esc(f.title.split("\n")[0])}">
+            <span class="qcount"><b>${f.count}</b> เคส</span>
+            <span class="qtitle">${esc(clip(f.title.split("\n")[0], 60))}</span>
+            ${fx.text ? `<span class="qfix"><span class="qfix-label">วิธีแรกที่ลอง${fx.from ? ` · ${esc(fx.from)}` : ""}</span>${esc(clip(fx.text, 90))}</span>` : '<span class="qfix muted">ยังไม่มีวิธีแก้ที่เขียนไว้</span>'}
+          </button>`;
+        }).join("")}</div>`;
+    }
+  }
+  const pop = popular();
+  html += `<div class="section-h"><h2>${teamMode() ? "บทความที่ช่วยได้มากที่สุด" : "วิธีแก้ที่ทำเองได้"}</h2><a href="#all" data-nav-to="all">บทความทั้งหมด (${visible().length}) →</a></div>`;
+  html += pop.length ? `<div class="alist">${pop.map(articleRow).join("")}</div>`
+    : `<div class="empty"><h3>ยังไม่มีบทความ</h3>${teamMode() ? 'กด "+ บันทึกวิธีแก้" เพื่อเพิ่มเรื่องแรก' : "ทีม Support ยังไม่ได้เปิดเรื่องใดให้ดู"}</div>`;
+  if (teamMode()) html += `<div class="foot-note">${syncLine()}</div>`;
+  view().innerHTML = html;
+}
+function syncLine() {
+  const y = S.sync;
+  if (y?.lastStatus === "token_expired") return `ข้อมูลเคสหยุดอัปเดต token หมดอายุ${isAdmin() ? ' · <button class="linkbtn" data-open-sync>วาง token ใหม่</button>' : ""}`;
+  return y?.lastOk ? `ข้อมูลเคสอัปเดตล่าสุด ${fmtTime(y.lastOk)}` : "";
+}
+function articleRow(a) {
+  const said = (a.aliases || []).slice(0, 3).join(" · ");
+  return `<button class="arow" data-article="${esc(a.id)}">
+    <span class="arow-main"><span class="arow-title">${hl(a.title)}</span>${said ? `<span class="arow-said">${hl(said)}</span>` : ""}</span>
+    <span class="arow-tags"><span class="tag">${esc(a.system)}</span>${levelTag(a)}${projTags(a)}${a.images?.length ? `<span class="tag">${a.images.length} รูป</span>` : ""}${a.feedback?.up ? `<span class="tag">ช่วยได้ ${a.feedback.up}</span>` : ""}</span>
+  </button>`;
+}
+
+/* ---------- results: the best answer first, then the rest ---------- */
+function bestFromCases() {
+  const r = S.cases;
+  if (!r?.results?.length) return null;
+  const groups = new Map();
+  for (const c of r.results.slice(0, 30)) {
+    const g = groups.get(c.solKey) || { text: c.solution, cause: c.cause, n: 0, sample: c };
+    g.n++;
+    groups.set(c.solKey, g);
+  }
+  const top = [...groups.values()].sort((a, b) => b.n - a.n)[0];
+  return top.n >= 2 ? { ...top, kind: "common" } : { ...top, n: 1, kind: "closest", sample: r.results[0], text: r.results[0].solution, cause: r.results[0].cause };
+}
+function stepsHtml(steps) { return `<ol class="steps big">${steps.map((s) => `<li>${esc(s)}</li>`).join("")}</ol>`; }
+function renderResults() {
+  const q = S.q.trim();
+  const arts = visible();
+  const top = arts[0];
+  const caseBest = teamMode() && !S.userView ? bestFromCases() : null;
+  let html = `<div class="results-head"><h2>ผลการค้นหา "${esc(q)}"</h2></div>`;
+
+  if (top) {
+    const c = top.causes[0];
+    S.rec = { title: top.title, cause: c.cause, steps: c.steps, verify: top.verify };
+    html += `<article class="rec">
+      <div class="rec-label">วิธีแก้ที่แนะนำ · จากบทความ</div>
+      <h3 class="rec-title"><button class="linkbtn" data-article="${esc(top.id)}">${esc(top.title)}</button></h3>
+      <div class="tags">${levelTag(top)}<span class="tag">${esc(top.system)}</span>${top.feedback.up ? `<span class="tag lv-user">ช่วยได้ ${top.feedback.up} ครั้ง</span>` : ""}</div>
+      ${c.cause ? `<div class="rec-cause"><span>สาเหตุที่พบบ่อย</span>${esc(c.cause)}</div>` : ""}
+      ${stepsHtml(c.steps)}
+      ${top.images?.length ? `<div class="rec-imgs">${top.images.slice(0, 4).map((im, i) => `<button class="thumb" data-zoom-article="${esc(top.id)}" data-i="${i}"><img src="${esc(im.url)}" alt="${esc(im.caption || "")}" loading="lazy"></button>`).join("")}</div>` : ""}
+      ${top.verify ? `<div class="verify"><b>ตรวจว่าแก้สำเร็จ:</b> ${esc(top.verify)}</div>` : ""}
+      <div class="rec-actions">
+        <button class="btn primary" data-copy-rec>คัดลอกขั้นตอนส่ง LINE</button>
+        <button class="btn" data-article="${esc(top.id)}">${top.causes.length > 1 ? `ดูอีก ${top.causes.length - 1} สาเหตุ` : "เปิดบทความเต็ม"}</button>
+        <button class="btn" data-vote="${esc(top.id)}" aria-pressed="${top.feedback.mine === 1}">ช่วยได้</button>
+      </div>
+    </article>`;
+  } else if (caseBest) {
+    const steps = splitSteps(caseBest.text);
+    S.rec = { title: q, cause: caseBest.cause, steps, verify: "" };
+    html += `<article class="rec from-cases">
+      <div class="rec-label">${caseBest.kind === "common" ? `วิธีแก้ที่ทีมใช้บ่อยที่สุด · ใช้แก้ ${caseBest.n} เคสที่คล้ายกัน` : "วิธีแก้จากเคสที่ใกล้เคียงที่สุด"}</div>
+      <h3 class="rec-title">${esc(clip(caseBest.sample.detail.split("\n")[0], 90))}</h3>
+      ${caseBest.cause ? `<div class="rec-cause"><span>สาเหตุ</span>${esc(caseBest.cause)}</div>` : ""}
+      ${stepsHtml(steps)}
+      <div class="rec-actions">
+        <button class="btn primary" data-copy-rec>คัดลอกขั้นตอนส่ง LINE</button>
+        <button class="btn" data-promote="${esc(caseBest.sample.id)}">บันทึกเป็นบทความ</button>
+      </div>
+      <div class="rec-note">ยังไม่มีบทความเรื่องนี้ ถ้าวิธีนี้ใช้ได้ บันทึกเป็นบทความไว้ให้ทีมใช้ครั้งหน้า</div>
+    </article>`;
+  } else if (teamMode() && !S.cases && !S.caseErr) {
+    html += `<div class="rec skeleton-box">กำลังค้นหาจากเคสที่เคยแก้…</div>`;
+  }
+
+  if (arts.length > (top ? 1 : 0)) {
+    html += `<div class="section-h"><h2>บทความอื่นที่เกี่ยวข้อง</h2></div><div class="alist">${arts.slice(top ? 1 : 0, 6).map(articleRow).join("")}</div>`;
+  }
+
+  if (teamMode() && !S.userView && S.cases?.results?.length) {
+    const r = S.cases;
+    html += `<details class="more-cases" ${!top && !caseBest ? "open" : ""}><summary>เคสที่คล้ายกันจากระบบรับแจ้งปัญหา <span class="tab-n">${r.total.toLocaleString("th-TH")}</span></summary>
+      <div class="case-list">${r.results.slice(0, 20).map(caseCard).join("")}</div>
+      ${r.total > 20 ? `<div class="meta-line"><span>แสดง 20 เคสที่ใกล้เคียงที่สุด พิมพ์ให้เจาะจงขึ้นเพื่อดูเคสที่ตรงกว่า</span></div>` : ""}
+    </details>`;
+  }
+
+  if (!top && !caseBest && (!teamMode() || S.cases || S.caseErr)) {
+    html += `<div class="empty"><h3>ยังไม่พบวิธีแก้สำหรับ "${esc(q)}"</h3>ลองใช้คำสั้นลง หรือคำที่ User มักพูด เช่น "ปิดสิทธิ", "สติกเกอร์", "13 แฟ้ม"
+      ${teamMode() ? `<div style="margin-top:12px"><button class="btn primary" data-new-from-q>บันทึกเป็นปัญหาใหม่</button></div>` : ""}</div>`;
+  }
+  view().innerHTML = html;
+}
+function caseCard(c) {
+  return `<article class="case">
+    <div class="q">${hl(c.detail)}</div>
+    ${c.cause ? `<div class="c">${esc(c.cause)}</div>` : ""}
+    <div class="a">${hl(c.solution)}</div>
+    <div class="case-foot">
+      ${c.project ? `<span class="tag">${esc(c.project)}</span>` : ""}${caseLoc(c)}<span>${fmtDate(c.date)}</span>${c.solver ? `<span>แก้โดย ${esc(c.solver)}</span>` : ""}
+      <button class="btn small" data-promote="${esc(c.id)}">สร้างบทความจากเคสนี้</button>
+    </div></article>`;
+}
+
+/* ---------- one article ---------- */
+function renderArticle() {
   const a = S.articles.find((x) => x.id === S.sel);
-  if (!a) return;
-  const id = e.target.id;
-  if (id === "backBtn") return select(null);
-  if (id === "copyErr" || id === "linkBtn") {
-    const text = id === "copyErr" ? a.errorMsg : location.origin + location.pathname + "#" + encodeURIComponent(a.id);
-    try { await navigator.clipboard.writeText(text); toast("คัดลอกแล้ว"); }
-    catch { prompt("คัดลอกข้อความนี้", text); }
+  if (!a) { view().innerHTML = S.ready ? `<div class="empty"><h3>ไม่พบเรื่องนี้</h3>อาจถูกลบไปแล้ว <button class="linkbtn" data-back>กลับ</button></div>` : ""; return; }
+  const { up, down, mine } = a.feedback;
+  const canEdit = isTeam() && !S.userView;
+  const backLabel = S.from === "results" ? "← กลับไปผลค้นหา" : S.from === "all" ? "← บทความทั้งหมด" : S.from === "overview" ? "← ภาพรวมปัญหา" : "← หน้าแรก";
+  view().innerHTML = `<article class="doc-card">
+    <button class="linkbtn back" data-back>${backLabel}</button>
+    ${S.userView ? '<div class="uview-banner">กำลังดูแบบที่ User จะเห็น</div>' : ""}
+    <div class="d-head"><h2>${esc(a.title)}</h2>
+      <div class="d-actions"><button class="btn small" id="linkBtn">คัดลอกลิงก์</button>${canEdit ? `<button class="btn small" id="editBtn">แก้ไข</button><button class="btn small danger" id="delBtn">ลบ</button>` : ""}</div></div>
+    <div class="tags"><span class="tag">${esc(a.system)}</span>${levelTag(a)}${isTeam() ? (a.projects?.length ? a.projects.map((p) => `<span class="tag proj-tag">${esc(p)}</span>`).join("") : '<span class="tag">ทุกโครงการ</span>') : ""}${isTeam() ? (a.userVisible ? '<span class="tag lv-user">เปิดให้ User เห็น</span>' : '<span class="tag">เฉพาะทีม</span>') : ""}${a.example ? '<span class="tag ex">ข้อมูลตัวอย่าง แก้หรือลบได้</span>' : ""}</div>
+    <div id="delConfirm"></div>
+    ${a.aliases.length ? `<div class="sec"><div class="sec-label">User มักแจ้งว่า</div><div class="said-list">${a.aliases.map((s) => `<span>"${esc(s)}"</span>`).join("")}</div></div>` : ""}
+    ${a.errorMsg ? `<div class="sec"><div class="sec-label">ข้อความ Error</div><div class="err"><span id="errTxt">${esc(a.errorMsg)}</span><button id="copyErr">คัดลอก</button></div></div>` : ""}
+    <div class="sec"><div class="sec-label">${a.causes.length > 1 ? `สาเหตุที่เป็นไปได้ ${a.causes.length} แบบ ลองตามลำดับ` : "วิธีแก้"}</div>
+      ${a.causes.map((c, i) => `<details class="cause" ${i === 0 ? "open" : ""}><summary><span class="n">${String(i + 1).padStart(2, "0")}</span><span>${esc(c.cause)}</span></summary>${stepsHtml(c.steps)}<div class="cause-actions"><button class="btn small" data-copy-cause="${i}">คัดลอกขั้นตอนนี้ส่ง LINE</button></div></details>`).join("")}
+    </div>
+    ${a.images?.length ? `<div class="sec"><div class="sec-label">รูปประกอบ</div><div class="gallery">${a.images.map((im, i) => `<figure><a href="${esc(im.url)}" target="_blank" rel="noopener" data-zoom="${i}"><img src="${esc(im.url)}" alt="${esc(im.caption || a.title)}" loading="lazy"></a>${im.caption ? `<figcaption>${esc(im.caption)}</figcaption>` : ""}</figure>`).join("")}</div></div>` : ""}
+    ${a.verify ? `<div class="sec"><div class="sec-label">ตรวจว่าแก้สำเร็จ</div><div class="verify">${esc(a.verify)}</div></div>` : ""}
+    <div class="feedback"><span>วิธีนี้ช่วยได้ไหม</span>
+      <button class="btn" id="fbUp" aria-pressed="${mine === 1}">ช่วยได้ · ${up}</button>
+      <button class="btn" id="fbDown" aria-pressed="${mine === -1}">ไม่ได้ผล · ${down}</button></div>
+    <div class="foot">${a.updatedAt ? `อัปเดตล่าสุด ${fmtTime(a.updatedAt)}` : ""}${isTeam() && a.updatedByName ? " โดย " + esc(a.updatedByName) : ""}</div>
+  </article>`;
+}
+
+/* ---------- all articles, by system ---------- */
+function renderAll() {
+  const used = new Set(S.articles.map((a) => a.system));
+  const opts = ["ทั้งหมด", ...SYSTEMS.filter((s) => used.has(s)), ...[...used].filter((s) => s && !SYSTEMS.includes(s))];
+  if (!opts.includes(S.sys)) S.sys = "ทั้งหมด";
+  const list = visible().sort((x, y) => x.title.localeCompare(y.title, "th"));
+  view().innerHTML = `<div class="results-head"><h2>บทความทั้งหมด</h2><span class="meta-line">${list.length} เรื่อง</span></div>
+    <div class="filters">${opts.map((s) => `<button class="chip" aria-pressed="${s === S.sys}" data-sys="${esc(s)}">${esc(s)}</button>`).join("")}</div>
+    ${list.length ? `<div class="alist">${list.map(articleRow).join("")}</div>` : `<div class="empty"><h3>ยังไม่มีบทความในหมวดนี้</h3></div>`}`;
+}
+
+/* ---------- copy for LINE ---------- */
+function lineText(title, cause, steps, verify) {
+  return [`วิธีแก้: ${title}`, cause ? `สาเหตุ: ${cause}` : "", ...steps.map((s, i) => `${i + 1}. ${s}`), verify ? `ตรวจสอบ: ${verify}` : ""].filter(Boolean).join("\n");
+}
+async function copyText(text, done = "คัดลอกแล้ว วางใน LINE ได้เลย") {
+  try { await navigator.clipboard.writeText(text); toast(done); }
+  catch {
+    const t = Object.assign(document.createElement("textarea"), { value: text });
+    document.body.append(t); t.select();
+    try { document.execCommand("copy"); toast(done); } catch { prompt("คัดลอกข้อความนี้", text); }
+    t.remove();
+  }
+}
+
+
+/* ---------- ภาพรวมปัญหา: the only place with period and area filters ---------- */
+async function renderOverview() {
+  const v = view();
+  const head = `<div class="results-head"><h2>ภาพรวมปัญหา</h2><span class="meta-line">ปัญหาที่ User แจ้งซ้ำ จัดกลุ่มจากเคสที่ปิดแล้ว${S.project ? ` · โครงการ${esc(S.project)}` : ""}</span></div>`;
+  if (!S.caseStats) { v.innerHTML = head + `<div class="meta-line">กำลังโหลด…</div>`; return; }
+  if (!S.caseStats.n) { v.innerHTML = head + noCasesYet(); return; }
+  const days = S.freqDays;
+  const picker = `<div class="seg" role="group" aria-label="ช่วงเวลา">${FREQ_DAYS.map(([d, l]) => `<button data-days="${d}" aria-pressed="${d === days}">${l}</button>`).join("")}</div>`;
+  S.freqCache ||= {};
+  const key = days + "|" + areaKey();
+  if (!S.freqCache[key]) {
+    v.innerHTML = head + `<div class="freq-head">${picker}${areaBar()}<span class="meta-line">กำลังจัดกลุ่มปัญหา…</span></div>`;
+    try { S.freqCache[key] = await api("GET", `/api/cases/frequent?limit=40&days=${days}${areaQS()}`); }
+    catch (e) { v.innerHTML = head + `<div class="empty"><h3>โหลดไม่สำเร็จ</h3>${esc(e.message)}</div>`; return; }
+    if (S.view !== "overview" || S.freqDays !== days || days + "|" + areaKey() !== key) return;
+  }
+  const r = S.freqCache[key];
+  S.freq = r.groups;
+  const span = r.from ? `${fmtDate(r.from)} – ${fmtDate(r.to)}` : `${fmtDate(S.caseStats.first)} – ${fmtDate(S.caseStats.last)}`;
+  const note = r.days && !r.prevComplete ? " ยังไม่มีข้อมูลย้อนหลังพอจะเทียบกับช่วงก่อนหน้า" : "";
+  const nGroups = r.totalGroups ?? r.groups.length;
+  let html = head + syncNote() + `<div class="freq-head">${picker}${areaBar()}</div>
+    <div class="stats">
+      <div class="stat"><b>${r.totalInWindow.toLocaleString("th-TH")}</b><span>เคสใน${r.days ? ` ${r.days} วัน` : "ข้อมูลทั้งหมด"}</span></div>
+      <div class="stat"><b>${nGroups.toLocaleString("th-TH")}</b><span>ปัญหาที่แจ้งซ้ำ</span></div>
+      <div class="stat"><b>${(r.totalSingles || 0).toLocaleString("th-TH")}</b><span>แจ้งครั้งเดียว</span></div>
+    </div>
+    <div class="meta-line"><span>${areaLabel() ? areaLabel() + " · " : ""}${span}${nGroups > r.groups.length ? ` · แสดง ${r.groups.length} กลุ่มแรก` : ""}${note}</span></div>`;
+  if (!r.groups.length) {
+    html += `<div class="notice">ไม่มีปัญหาที่ถูกแจ้งซ้ำ${areaLabel() ? `ใน${areaLabel()} ` : ""}ในช่วงนี้ ${r.totalSingles ? `ด้านล่างคือเคสทั้ง ${r.totalSingles} เคสที่แจ้งเข้ามา พร้อมวิธีแก้` : "ลองเลือกช่วงเวลาที่ยาวขึ้น"}</div>`;
+    v.innerHTML = html + singlesBlock(r);
     return;
   }
+  html += r.groups.map((f, i) => {
+    const art = articleFor(f);
+    let fix;
+    if (art) {
+      const c = art.causes[0], top = f.solutions[0];
+      fix = `<div class="fix-src">ขั้นตอนจากบทความ "${esc(art.title)}"${art.causes.length > 1 ? ` (สาเหตุที่ 1 จาก ${art.causes.length})` : ""}</div>
+        ${c.cause ? `<div class="fix-cause">${esc(c.cause)}</div>` : ""}
+        <ol class="steps">${c.steps.map((x) => `<li>${esc(x)}</li>`).join("")}</ol>
+        ${top ? `<div class="fix-src">วิธีแก้ที่ใช้บ่อยในเคส</div><ul class="other-fixes"><li>${esc(clip(top.text, 220))}${top.n > 1 ? ` <span class="fix-n">${top.n} เคส</span>` : ""}</li></ul>` : ""}`;
+    } else if (f.solutions.length) {
+      const [top, ...rest] = f.solutions;
+      fix = `<div class="fix-src">วิธีแก้ที่ใช้บ่อยที่สุด${top.n > 1 ? ` <span class="fix-n">${top.n} เคส</span>` : ""}</div>
+        <ol class="steps">${splitSteps(top.text).map((x) => `<li>${esc(clip(x, 400))}</li>`).join("")}</ol>
+        ${rest.length ? `<div class="fix-src">วิธีอื่นที่เคยใช้</div><ul class="other-fixes">${rest.map((x) => `<li>${esc(clip(x.text, 220))}${x.n > 1 ? ` <span class="fix-n">${x.n} เคส</span>` : ""}</li>`).join("")}</ul>` : ""}`;
+    } else fix = '<div class="variants">ยังไม่มีวิธีแก้ที่เขียนไว้ชัดเจน</div>';
+    return `<article class="freq">
+      <div class="freq-n">${f.count}<small>เคส</small></div>
+      <div class="freq-title"><h3>${esc(f.title)}</h3>${trendChip(f, r)}</div>
+      ${f.variants.length ? `<div class="variants">แจ้งแบบอื่น: ${f.variants.map((x) => `"${esc(clip(x, 60))}"`).join(", ")}</div>` : '<div class="variants"></div>'}
+      <div class="freq-fix">${fix}</div>
+      <div class="freq-actions"><button class="btn small" data-freq-search="${i}">ค้นเคสที่คล้ายกัน</button>${art
+        ? `<button class="btn small" data-article="${esc(art.id)}">เปิดบทความ</button>`
+        : `<button class="btn small primary" data-freq-promote="${i}">สร้างบทความ</button>`}</div>
+    </article>`;
+  }).join("");
+  html += singlesBlock(r);
+  v.innerHTML = html;
+}
+
+/* ---------- events ---------- */
+$("#q").addEventListener("input", (e) => {
+  S.q = e.target.value;
+  if (!S.q.trim()) { S.view = "home"; S.from = "home"; history.replaceState(null, "", location.pathname); render(); return; }
+  if (S.view !== "results") {
+    S.view = S.from = "results";
+    if (location.hash) history.pushState(null, "", location.pathname);
+    renderHeader();
+  }
+  renderView();
+  searchCases();
+});
+$("#q").addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && S.q) { e.preventDefault(); runSearch(""); }
+  if (e.key === "Enter") { e.preventDefault(); searchCases(true); }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.target.closest("input,textarea,select,[contenteditable]") || !$("#sheet").hidden) return;
+  e.preventDefault();
+  if ($("#searchArea").hidden) go("home");
+  $("#q").focus();
+});
+$("#userView").addEventListener("change", (e) => { S.userView = e.target.checked; S.homeFreq = null; render(); });
+$("#loginBtn").addEventListener("click", openLogin);
+$("#addBtn").addEventListener("click", () => openEditor(null, S.view === "results" && S.q.trim() ? blankFromQuery() : undefined));
+$("#homeLink").addEventListener("click", (e) => { e.preventDefault(); runSearch(""); });
+$("#nav").addEventListener("click", (e) => {
+  const a = e.target.closest("[data-nav]");
+  if (!a) return;
+  e.preventDefault();
+  if (a.dataset.nav === "home") return S.q.trim() ? go("results") : go("home");
+  go(a.dataset.nav);
+});
+$("#examples").addEventListener("click", (e) => { const b = e.target.closest("[data-try]"); if (b) runSearch(b.dataset.try); });
+
+function blankFromQuery() {
+  return { title: S.q.trim(), aliases: [S.q.trim()], errorMsg: "", system: "HOSxP", level: "support", userVisible: false, causes: [{ cause: "", steps: [] }], verify: "", images: [], projects: S.project ? [S.project] : [] };
+}
+
+$("#view").addEventListener("change", (e) => {
+  if (S.view !== "overview") return;
+  if (e.target.id === "f-region") {
+    const v = e.target.value;
+    S.area = { region: v && v !== "unknown" ? Number(v) : 0, prov: "", unknown: v === "unknown" };
+  } else if (e.target.id === "f-prov") S.area = { ...S.area, prov: e.target.value };
+  else return;
+  renderOverview();
+});
+
+$("#view").addEventListener("click", async (e) => {
+  const t = e.target.closest("button,a");
+  if (!t) return;
+  const d = t.dataset;
+  const a = S.view === "article" ? S.articles.find((x) => x.id === S.sel) : null;
+
+  if (d.zoom != null && a?.images?.length) { e.preventDefault(); return openViewer(a.images, Number(d.zoom)); }
+  if (d.zoomArticle) {
+    const art = S.articles.find((x) => x.id === d.zoomArticle);
+    if (art) openViewer(art.images, Number(d.i));
+    return;
+  }
+  if (d.navTo) { e.preventDefault(); return go(d.navTo); }
+  if (d.try) return runSearch(d.try);
+  if (d.article) return openArticle(d.article);
+  if (d.back != null) return go(S.from && S.from !== "article" ? S.from : "home");
+  if (d.openSync != null) return openSync();
+  if (d.importCases != null) return openImportCases();
+  if (d.copyRec != null && S.rec) return copyText(lineText(S.rec.title, S.rec.cause, S.rec.steps, S.rec.verify));
+  if (d.copyCause != null && a) {
+    const c = a.causes[Number(d.copyCause)];
+    return copyText(lineText(a.title, c.cause, c.steps, a.verify));
+  }
+  if (d.vote) {
+    const art = S.articles.find((x) => x.id === d.vote);
+    if (!art) return;
+    try {
+      art.feedback = await api("POST", `/api/articles/${encodeURIComponent(art.id)}/feedback`, { value: art.feedback.mine === 1 ? 0 : 1 });
+      if (art.feedback.mine === 1) toast("ขอบคุณ ระบบจะดันบทความนี้ขึ้นก่อน");
+      renderView();
+    } catch (err) { toast(err.message); }
+    return;
+  }
+  if (d.promote) {
+    const c = S.cases?.results.find((x) => x.id === d.promote);
+    if (c) openEditor(null, draftFromCase(c));
+    return;
+  }
+  if (d.newFromQ != null) return openEditor(null, blankFromQuery());
+  if (d.sys) { S.sys = d.sys; return renderAll(); }
+  if (d.days != null) { S.freqDays = Number(d.days); return renderOverview(); }
+  if (d.freqSearch) return runSearch(S.freq[d.freqSearch].title.split("\n")[0]);
+  if (d.freqPromote) return openEditor(null, draftFromCluster(S.freq[d.freqPromote]));
+  if (d.promoteSingle) {
+    const c = (S.singles || []).find((x) => x.id === d.promoteSingle);
+    if (c) openEditor(null, draftFromCase(c));
+    return;
+  }
+
+  if (!a) return;
+  const id = t.id;
+  if (id === "copyErr") return copyText(a.errorMsg, "คัดลอกแล้ว");
+  if (id === "linkBtn") return copyText(location.origin + location.pathname + "#" + encodeURIComponent(a.id), "คัดลอกลิงก์แล้ว");
   if (id === "editBtn") return openEditor(a);
   if (id === "delBtn") {
     $("#delConfirm").innerHTML = `<div class="notice" style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">ลบเรื่องนี้ออกจากคลัง? (ผู้ดูแลระบบกู้คืนจากประวัติในฐานข้อมูลได้) <button class="btn small danger solid" id="delYes">ลบ</button><button class="btn small" id="delNo">ยกเลิก</button></div>`;
@@ -956,7 +1138,7 @@ $("#detail").addEventListener("click", async (e) => {
   }
   if (id === "delNo") { $("#delConfirm").innerHTML = ""; return; }
   if (id === "delYes") {
-    try { await api("DELETE", "/api/articles/" + encodeURIComponent(a.id)); toast("ลบแล้ว"); S.sel = null; load(); }
+    try { await api("DELETE", "/api/articles/" + encodeURIComponent(a.id)); toast("ลบแล้ว"); S.sel = null; await load(); go("home"); }
     catch (err) { toast(err.message); }
     return;
   }
@@ -964,24 +1146,54 @@ $("#detail").addEventListener("click", async (e) => {
     const val = id === "fbUp" ? 1 : -1;
     try {
       a.feedback = await api("POST", `/api/articles/${encodeURIComponent(a.id)}/feedback`, { value: a.feedback.mine === val ? 0 : val });
-      renderDetail();
+      renderArticle();
     } catch (err) { toast(err.message); }
   }
 });
 
-window.addEventListener("hashchange", () => {
-  const id = decodeURIComponent(location.hash.slice(1));
-  if (id !== S.sel && S.articles.some((a) => a.id === id)) select(id);
+$("#acctBtn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  const l = $("#acctList");
+  l.hidden = !l.hidden;
+  $("#acctBtn").setAttribute("aria-expanded", String(!l.hidden));
 });
+$("#acctList").addEventListener("click", (e) => { if (e.target.closest(".menu-check")) e.stopPropagation(); });
+document.addEventListener("click", () => { $("#acctList").hidden = true; $("#acctBtn").setAttribute("aria-expanded", "false"); });
+$("#mPassword").addEventListener("click", () => openPassword());
+$("#mUsers").addEventListener("click", openUsers);
+$("#mImport").addEventListener("click", openImport);
+$("#mImportCases").addEventListener("click", openImportCases);
+$("#mSync").addEventListener("click", openSync);
+$("#mImportHosp").addEventListener("click", openImportHospitals);
+$("#mExport").addEventListener("click", () => { if (window.KB_DEMO) return window.KB_DEMO.exportJson(); location.href = "/api/export"; });
+$("#mLogout").addEventListener("click", async () => {
+  await api("POST", "/api/logout").catch(() => {});
+  S.me = null; S.userView = false; S.cases = null; S.freq = null; S.freqCache = null; S.caseStats = null; S.homeFreq = null;
+  toast("ออกจากระบบแล้ว");
+  if (S.view === "overview") S.view = "home";
+  load();
+});
+
+/** Address bar → view, for Back/Forward and shared links. */
+function fromHash() {
+  const h = decodeURIComponent(location.hash.slice(1));
+  if (h === "all") S.view = "all";
+  else if (h === "overview") S.view = isTeam() ? "overview" : "home";
+  else if (h && S.articles.some((a) => a.id === h)) { S.view = "article"; S.sel = h; }
+  else S.view = S.q.trim() ? "results" : "home";
+  if (S.view === "overview" && !S.caseStats) loadCaseStats().then(render);
+  render();
+}
+window.addEventListener("popstate", fromHash);
 // refresh when the tab comes back into focus, so edits by teammates show up
 let lastLoad = Date.now();
-window.addEventListener("focus", () => { if (Date.now() - lastLoad > 30e3 && $("#sheet").hidden) { lastLoad = Date.now(); load(); } });
+window.addEventListener("focus", () => { if (Date.now() - lastLoad > 30e3 && $("#sheet").hidden) { lastLoad = Date.now(); S.homeFreq = null; load(); } });
 
 /* ---------- theme: ตามระบบ → สว่าง → มืด ---------- */
 const THEMES = {
-  system: { label: "ตามระบบ", next: "light", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>' },
-  light: { label: "สว่าง", next: "dark", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>' },
-  dark: { label: "มืด", next: "system", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>' },
+  system: { label: "ตามระบบ", next: "light", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>' },
+  light: { label: "สว่าง", next: "dark", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>' },
+  dark: { label: "มืด", next: "system", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>' },
 };
 function currentTheme() { return document.documentElement.dataset.theme || "system"; }
 function applyTheme(t) {
@@ -989,7 +1201,7 @@ function applyTheme(t) {
   else document.documentElement.dataset.theme = t;
   try { t === "system" ? localStorage.removeItem("kb-theme") : localStorage.setItem("kb-theme", t); } catch {}
   const th = THEMES[t], btn = $("#themeBtn");
-  btn.innerHTML = th.icon + `<span>${th.label}</span>`;
+  btn.innerHTML = th.icon;
   btn.title = `ธีม: ${th.label} (กดเพื่อเปลี่ยนเป็น${THEMES[th.next].label})`;
   btn.setAttribute("aria-label", btn.title);
 }
@@ -1002,7 +1214,7 @@ applyTheme(currentTheme());
   await loadMe();
   if (S.me?.mustChange) { render(); return openPassword(S.me, true); }
   await load();
-  if (isTeam()) { await loadCaseStats(); searchCases(true); }
-  const id = decodeURIComponent(location.hash.slice(1));
-  if (id && S.articles.some((a) => a.id === id)) select(id);
+  if (isTeam()) { await loadCaseStats(); render(); }
+  fromHash();
 })();
+
